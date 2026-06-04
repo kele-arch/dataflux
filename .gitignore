@@ -1,0 +1,12 @@
+/tests/*
+.venv
+app/init.log
+init.log
+/Test/*
+.env
+requirements.txt
+/Test
+/alembic/versions/*
+/tmp
+/script
+.idea
