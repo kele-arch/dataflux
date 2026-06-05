@@ -1,0 +1,83 @@
+# -- coding: utf-8 --
+# @Author: 胡H
+# @File: app/crud/crud_tsync.py
+# @Created: 2026/6/5 14:45
+# @LastModified: 
+# Copyright (c) 2026 by 胡H, All Rights Reserved.
+# @desc:
+
+from sqlalchemy import select, update, delete, func
+from sqlalchemy.orm import Session
+
+from app.models.collectTaskModel import CollectTask
+from app.schemas.tsync import TaskCreateReq, TaskUpdateReq, TaskPageQueryReq
+
+
+# 假设你的 SQLAlchemy 模型名为 CollectTask
+
+
+class CRUDCollectTask:
+    """ 同步任务配置 CRUD 封装类 """
+
+    def create(self, db: Session, req: TaskCreateReq) -> CollectTask:
+        """ 新增任务 """
+        # 将 pydantic 模型转为字典并剥离不属于数据库的字段
+        obj_in_data = req.model_dump(exclude_unset=True)
+        db_obj = CollectTask(**obj_in_data)
+        db.add(db_obj)
+        db.commit()
+        db.refresh(db_obj)
+        return db_obj
+
+    def get_by_id(self, db: Session, task_id: int) -> CollectTask:
+        """ 根据 ID 获取任务详情 """
+        return db.execute(select(CollectTask).where(CollectTask.id == task_id)).scalar_one_or_none()
+
+    def update(self, db: Session, req: TaskUpdateReq) -> bool:
+        """ 更新任务 """
+        obj_in_data = req.model_dump(exclude_unset=True, exclude={"task_id"})
+        stmt = update(CollectTask).where(CollectTask.id == req.task_id).values(**obj_in_data)
+        result = db.execute(stmt)
+        db.commit()
+        return result.rowcount > 0
+
+    def delete(self, db: Session, task_id: int) -> bool:
+        """ 删除任务 """
+        stmt = delete(CollectTask).where(CollectTask.id == task_id)
+        result = db.execute(stmt)
+        db.commit()
+        return result.rowcount > 0
+
+    def get_list(self, db: Session, req: TaskPageQueryReq) -> dict:
+        """ 分页与条件查询 """
+        stmt = select(CollectTask).order_by(CollectTask.id.desc())
+
+        # 动态条件过滤
+        if req.task_name:
+            stmt = stmt.where(CollectTask.task_name.like(f"%{req.task_name}%"))
+        if req.collect_mode:
+            stmt = stmt.where(CollectTask.collect_mode == req.collect_mode)
+
+        # 统计总数
+        total_stmt = select(func.count()).select_from(stmt.subquery())
+        total = db.execute(total_stmt).scalar() or 0
+
+        # 分页
+        offset = (req.page - 1) * req.size
+        stmt = stmt.offset(offset).limit(req.size)
+        items = db.execute(stmt).scalars().all()
+
+        return {
+            "total": total,
+            "items": [item for item in items]
+        }
+
+    def update_watermark(self, db: Session, task_id: int, new_watermark: str):
+        """ 核心闭环：每次同步完成后更新高水位线 """
+        stmt = update(CollectTask).where(CollectTask.id == task_id).values(last_watermark=new_watermark)
+        db.execute(stmt)
+        db.commit()
+
+
+# 实例化一个全局可用的 crud 对象
+crud_task = CRUDCollectTask()

@@ -6,9 +6,11 @@
 # Copyright (c) 2025 by 胡H, All Rights Reserved.
 # @desc:
 from fastapi import APIRouter
-# from .forms import router as forms_router
 from .tsync import router as tsync_router
+from .datasource import router as datasource_router
+from .tasklog import router as tasklog_router
 
 api_router = APIRouter()
-# api_router.include_router(forms_router)        # /forms 路由集合
 api_router.include_router(tsync_router)
+api_router.include_router(datasource_router)
+api_router.include_router(tasklog_router)

@@ -5,9 +5,10 @@
 # @LastModified: 
 # Copyright (c) 2026 by 胡H, All Rights Reserved.
 # @desc:
+from datetime import datetime
 
-from pydantic import Field
-from typing import Optional, Literal
+from pydantic import Field, BaseModel, ConfigDict
+from typing import Optional, Literal, List
 from app.schemas.base import BaseDecryptReq
 
 
@@ -23,6 +24,7 @@ class DBSyncReq(BaseDecryptReq):
     # 选填, 有默认值
     charset: Optional[str] = Field("utf8mb4", description="字符集")
     target_table: Optional[str] = Field(default=None, description="指定表名，不填则整库同步")
+    sync_tables: Optional[List[str]] = Field(default=None, description="指定同步的表名列表，为空则全库同步")
 
     # 核心同步策略
     sync_mode: Literal["insert", "overwrite", "skip"] = Field(
@@ -47,3 +49,59 @@ class DBSyncReq(BaseDecryptReq):
         default=None,
         description="自定义提取SQL语句"
     )
+
+
+# region ---- 任务管理 ----
+class TaskCreateReq(BaseDecryptReq):
+    task_name: str = Field(..., description="任务名称")
+    source_id: str = Field(..., description="关联的数据源ID")
+    topic_or_table: str = Field(..., description="目标表名或MQTT Topic")
+    schedule_cron: Optional[str] = Field(default=None, description="定时任务表达式")
+    status: int = Field(default=1, description="任务状态：0停用, 1启用")
+    sync_mode: str = Field(default="overwrite", description="冲突策略")
+    collect_mode: Literal["full", "inc_id", "inc_time", "custom_sql"] = Field(default="full")
+    incremental_column: Optional[str] = Field(default=None)
+    last_watermark: Optional[str] = Field(default=None)
+    custom_sql: Optional[str] = Field(default=None)
+    remark: Optional[str] = Field(default=None, description="备注")
+    sync_tables: Optional[List[str]] = Field(default=None, description="指定同步的表名列表")
+
+
+class TaskUpdateReq(TaskCreateReq):
+    task_id: str = Field(..., min_length=32, max_length=32, description="要更新的任务ID(UUID)")
+
+
+class TaskIdReq(BaseDecryptReq):
+    task_id: str = Field(..., min_length=32, max_length=32, description="任务ID(UUID)")
+
+
+class TaskPageQueryReq(BaseDecryptReq):
+    page: int = Field(default=1, ge=1)
+    size: int = Field(default=10, ge=1)
+    task_name: Optional[str] = Field(default=None)
+    collect_mode: Optional[str] = Field(default=None)
+
+
+class TaskOut(BaseModel):
+    id: str
+    task_name: str
+    source_id: str
+    topic_or_table: str
+    status: int
+    sync_mode: str
+    collect_mode: str
+    incremental_column: Optional[str]
+    last_watermark: Optional[str]
+    remark: Optional[str]
+    create_time: Optional[datetime]
+    update_time: Optional[datetime]
+    sync_tables: Optional[List[str]]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TaskPageOut(BaseModel):
+    total: int
+    items: List[TaskOut]
+    model_config = ConfigDict(from_attributes=True)
+# endregion
