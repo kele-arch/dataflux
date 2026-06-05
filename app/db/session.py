@@ -12,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
 from typing import Generator
 from sqlalchemy.engine import Engine
+from app.core import logger
 
 DATABASE_URL = settings.database_url
 

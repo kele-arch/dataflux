@@ -7,6 +7,8 @@
 # @desc:
 from fastapi import APIRouter
 # from .forms import router as forms_router
+from .tsync import router as tsync_router
 
 api_router = APIRouter()
 # api_router.include_router(forms_router)        # /forms 路由集合
+api_router.include_router(tsync_router)

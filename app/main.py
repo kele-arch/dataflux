@@ -61,8 +61,6 @@ async def lifespan(app: FastAPI):
     logger.info('程序执行结束')
 
 
-
-
 def create_app() -> FastAPI:
     app = FastAPI(title="Form Service", version="0.1", lifespan=lifespan)
 
@@ -87,6 +85,5 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("app.main:app", host=settings.SERVER_HOST, port=settings.SERVER_PORT, reload=True)  # 正常环境使用这个
-    # uvicorn.run(app, host=settings.SERVER_HOST, port=settings.SERVER_PORT, reload=False)  # 打包 exe 使用这个
-
+    # uvicorn.run("app.main:app", host=settings.SERVER_HOST, port=settings.SERVER_PORT, reload=True)  # 正常环境使用这个
+    uvicorn.run(app, host=settings.SERVER_HOST, port=settings.SERVER_PORT, reload=False)  # 打包 exe 使用这个
