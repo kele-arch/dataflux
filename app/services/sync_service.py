@@ -89,7 +89,22 @@ class DatabaseSyncEngine:
             return []
 
         logger.info("正在反射源数据库表结构...")
-        self.source_metadata.reflect(bind=self.source_engine)
+
+        # 优先级 1：多表数组存在, 完全听从数组, 忽略 target_table
+        if self.req.sync_tables:
+            logger.info(f"采用 [指定多表] 模式, 目标: {self.req.sync_tables}")
+            self.source_metadata.reflect(bind=self.source_engine, only=self.req.sync_tables)
+
+        # 优先级 2：兼容旧版单表, 仅当数组为空时, 使用 target_table 过滤
+        elif self.req.target_table:
+            logger.info(f"采用 [单表兼容] 模式, 目标: {self.req.target_table}")
+            self.source_metadata.reflect(bind=self.source_engine, only=[self.req.target_table])
+
+        # 优先级 3：整库反射
+        else:
+            logger.info("采用 [整库反射] 模式")
+            self.source_metadata.reflect(bind=self.source_engine)
+
         table_names = list(self.source_metadata.tables.keys())
         logger.info(f"成功读取到 {len(table_names)} 张源表: {table_names}")
         return table_names
@@ -98,7 +113,11 @@ class DatabaseSyncEngine:
         """ 步骤二: 类型归一化与约束清洗, 在目标库建表 """
 
         if self.req.collect_mode == "custom_sql":  # 拦截
-            self.target_metadata.reflect(bind=self.target_engine)  # 仅反射目标库现有表结构用于后续写入
+            # 仅反射目标那 1 张表, 极大提升启动速度
+            if self.req.target_table:
+                self.target_metadata.reflect(bind=self.target_engine, only=[self.req.target_table])
+            else:
+                self.target_metadata.reflect(bind=self.target_engine)
             return
 
         logger.info("正在进行列类型归一化, 并彻底剥离源端约束...")
@@ -149,23 +168,19 @@ class DatabaseSyncEngine:
 
         return total_inserted
 
-    def _migrate_data(self) -> int:
+    def _migrate_data(self) -> tuple:
         """ 步骤三: 流式读取与微批次写入 (支持动态查询与水位线记录) """
         logger.info(f"开始进行数据流式搬运, 冲突策略: [{self.sync_mode}], 采集模式: [{self.req.collect_mode}] ...")
         total_records_migrated = 0
+        global_max_watermark = None  # 全局最大水位线, 用于记录整个迁移过程的最高时间戳
 
         with self.source_engine.connect() as s_conn, self.target_engine.begin() as t_conn:
 
             if self.req.collect_mode == "custom_sql":
-                return self._migrate_custom_sql(s_conn, t_conn)
+                total = self._migrate_custom_sql(s_conn, t_conn)
+                return total, None  # custom_sql 不记录水位
 
-            # 如果指定了单表, 就只过滤那张表; 否则还是遍历全表
-            tables_to_sync = {
-                name: table for name, table in self.source_metadata.tables.items()
-                if not self.req.target_table or name == self.req.target_table
-            }
-
-            for table_name, source_table in tables_to_sync.items():
+            for table_name, source_table in self.source_metadata.tables.items():
                 logger.info(f"->正在同步表: [{table_name}] ...")
                 start_time = time.time()
 
@@ -214,36 +229,32 @@ class DatabaseSyncEngine:
                 watermark_log = f" (产生新水位线: {current_max_watermark})" if current_max_watermark else ""
                 logger.info(f"   [{table_name}] 完成！迁移 {inserted_count} 条, 耗时 {elapsed:.2f} 秒{watermark_log}")
 
-        return total_records_migrated
+                if current_max_watermark:
+                    if global_max_watermark is None or current_max_watermark > global_max_watermark:
+                        global_max_watermark = current_max_watermark
+
+        return total_records_migrated, global_max_watermark
 
     def _build_extract_query(self, source_table, task_config):
         """
         根据前端配置的采集模式, 动态生成源库查询语句
         """
         mode = task_config.collect_mode
+        base_query = select(source_table)  # 构造基础的 Select 语句
 
-        # 1. 自定义 SQL 模式 (最高优先级)
-        if mode == "custom_sql" and task_config.custom_sql:
-            logger.info("采用 [自定义SQL] 模式进行提取")
-            # 使用 text() 执行原生 SQL
-            return text(task_config.custom_sql)
-
-        # 构造基础的 Select 语句
-        base_query = select(source_table)
-
-        # 2. 全量采集
+        # 1. 全量采集
         if mode == "full":
             logger.info("采用 [全量] 模式进行提取")
             return base_query
 
-        # 3. 增量 - 自增列模式
+        # 2. 增量 - 自增列模式
         if mode == "inc_id" and task_config.incremental_column and task_config.last_watermark:
             logger.info(f"采用 [自增列] 增量提取, 水位线: {task_config.last_watermark}")
             inc_col = getattr(source_table.c, task_config.incremental_column)
             # WHERE id > last_watermark
             return base_query.where(inc_col > task_config.last_watermark)
 
-        # 4. 增量 - 时间戳模式
+        # 3. 增量 - 时间戳模式
         if mode == "inc_time" and task_config.incremental_column and task_config.last_watermark:
             logger.info(f"采用 [时间戳] 增量提取, 水位线: {task_config.last_watermark}")
             time_col = getattr(source_table.c, task_config.incremental_column)
@@ -255,19 +266,21 @@ class DatabaseSyncEngine:
 
     def main(self) -> dict:
         """ """
-        safe_url = self.source_url.replace(self.req.password, '******')
+        safe_password = quote_plus(self.req.password)
+        safe_url = self.source_url.replace(safe_password, '******')
         logger.info(f"启动数据迁移引擎, 源端: {safe_url}")
 
         try:
             table_names = self._reflect_source_schema()
             self._prepare_target_schema()
-            total_records = self._migrate_data()
+            total_records, new_watermark = self._migrate_data()
 
             logger.info(f"全库同步完美收官！共迁移 {len(table_names)} 张表, {total_records} 条记录")
             return {
                 "status": "success",
                 "tables_synced": len(table_names),
-                "total_records": total_records
+                "total_records": total_records,
+                "new_watermark": new_watermark
             }
 
         except SQLAlchemyError as e:
