@@ -6,7 +6,7 @@
 # Copyright (c) 2026 by 胡H, All Rights Reserved.
 # @desc:
 
-from sqlalchemy import String, Integer, Text
+from sqlalchemy import String, Integer, Text, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 from app.models.bashModel import BaseModelMixin
@@ -28,6 +28,11 @@ class CollectTask(Base, BaseModelMixin):
     schedule_cron: Mapped[str | None] = mapped_column(String(50), nullable=True,
                                                       comment="定时任务表达式，为空则表示常驻流式任务")
     status: Mapped[int] = mapped_column(Integer, default=1, comment="任务状态：0停用, 1启用")
+
+    sync_mode: Mapped[str] = mapped_column(String(20), default="overwrite", comment="冲突策略: insert, overwrite, skip")
+    remark: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="备注")
+
+    sync_tables: Mapped[list | None] = mapped_column(JSON, nullable=True, comment="指定同步表")
 
     # 采集模式：full(全量), inc_id(自增列), inc_time(时间戳), custom_sql(自定义SQL)
     collect_mode: Mapped[str] = mapped_column(String(20), default="full")

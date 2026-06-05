@@ -24,6 +24,8 @@ class DataSource(Base, BaseModelMixin):
     host: Mapped[str] = mapped_column(String(255), nullable=False, comment="主机地址")
     port: Mapped[int] = mapped_column(Integer, nullable=False, comment="端口")
 
+    db_name: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="数据库名称")
+
     # 可选字段可以标记为 Mapped[str | None] 或 Optional[str] (取决于你的Python版本)
     username: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="用户名")
     password: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="密码(建议密文存储)")
