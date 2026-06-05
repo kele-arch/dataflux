@@ -55,7 +55,7 @@ class DBSyncReq(BaseDecryptReq):
 class TaskCreateReq(BaseDecryptReq):
     task_name: str = Field(..., description="任务名称")
     source_id: str = Field(..., description="关联的数据源ID")
-    topic_or_table: str = Field(..., description="目标表名或MQTT Topic")
+    topic_or_table: Optional[str] = Field(default=None, description="custom_sql模式下目标库写入表名，普通模式可不传")
     schedule_cron: Optional[str] = Field(default=None, description="定时任务表达式")
     status: int = Field(default=1, description="任务状态：0停用, 1启用")
     sync_mode: str = Field(default="overwrite", description="冲突策略")
@@ -86,7 +86,7 @@ class TaskOut(BaseModel):
     id: str
     task_name: str
     source_id: str
-    topic_or_table: str
+    topic_or_table: Optional[str]
     status: int
     sync_mode: str
     collect_mode: str

@@ -48,8 +48,8 @@ def get_task_list(req: TaskPageQueryReq, db: Session = Depends(get_db)):
 
 @router.post("/add", summary="新增同步任务", response_model=BaseResponse)
 def add_task(req: TaskCreateReq, db: Session = Depends(get_db)):
-    crud_task.create(db, req)
-    return BaseResponse(msg="任务创建成功")
+    obj = crud_task.create(db, req)
+    return BaseResponse(data={"id": obj.id}, msg="任务创建成功")
 
 
 @router.post("/update", summary="修改同步任务配置", response_model=BaseResponse)

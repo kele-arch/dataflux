@@ -43,8 +43,8 @@ def test_db_connection(req: DataSourceBase):
 
 @router.post("/add", summary="新增数据源", response_model=BaseResponse)
 def add_datasource(req: DataSourceCreateReq, db: Session = Depends(get_db)):
-    crud_datasource.create(db, req)
-    return BaseResponse(msg="数据源保存成功")
+    obj = crud_datasource.create(db, req)
+    return BaseResponse(data={"id": obj.id}, msg="数据源保存成功")
 
 
 @router.post("/update", summary="修改数据源", response_model=BaseResponse)

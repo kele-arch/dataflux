@@ -7,7 +7,10 @@
 # @desc: 数据库全量同步服务: 反射源库结构
 
 import time
-from sqlalchemy import create_engine, MetaData, select, Table, text
+from datetime import datetime
+
+from sqlalchemy import create_engine, MetaData, select, Table, text, Text, String, Integer, DateTime, Boolean, JSON, \
+    Date, Numeric
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from urllib.parse import quote_plus
@@ -90,17 +93,10 @@ class DatabaseSyncEngine:
 
         logger.info("正在反射源数据库表结构...")
 
-        # 优先级 1：多表数组存在, 完全听从数组, 忽略 target_table
+        # sync_tables 指定了就只反射这些表, 否则整库反射
         if self.req.sync_tables:
             logger.info(f"采用 [指定多表] 模式, 目标: {self.req.sync_tables}")
             self.source_metadata.reflect(bind=self.source_engine, only=self.req.sync_tables)
-
-        # 优先级 2：兼容旧版单表, 仅当数组为空时, 使用 target_table 过滤
-        elif self.req.target_table:
-            logger.info(f"采用 [单表兼容] 模式, 目标: {self.req.target_table}")
-            self.source_metadata.reflect(bind=self.source_engine, only=[self.req.target_table])
-
-        # 优先级 3：整库反射
         else:
             logger.info("采用 [整库反射] 模式")
             self.source_metadata.reflect(bind=self.source_engine)
@@ -202,7 +198,10 @@ class DatabaseSyncEngine:
 
                 for row in result_proxy:
                     row_dict = dict(row._mapping)
-                    batch_data.append(row_dict)
+
+                    clean_dict = self._clean_row_data(row_dict, target_table)  # 数据清洗
+
+                    batch_data.append(clean_dict)
 
                     # 如果是增量模式, 找出这批数据中的最大值
                     if self.req.collect_mode in ["inc_id", "inc_time"] and self.req.incremental_column:
@@ -263,6 +262,45 @@ class DatabaseSyncEngine:
 
         # 默认回退到全量
         return base_query
+
+    def _clean_row_data(self, row_dict: dict, target_table) -> dict:
+        """
+        清洗单行数据, 适配目标表结构与类型兜底
+        解决跨库同步时的列缺失、NOT NULL 冲突和类型转换崩溃问题
+        """
+        cleaned = {}
+
+        for col in target_table.columns:
+            col_name = col.name
+            val = row_dict.get(col_name)
+
+            # 源数据有值, 且不是 None, 直接保留
+            if val is not None:
+                cleaned[col_name] = val
+                continue
+
+            # 源数据为 None 或完全缺失
+            # 如果目标列允许为空(nullable), 或者数据库层面有默认值(default/server_default)
+            if col.nullable:
+                # 目标表允许为空，统一强塞 None（数据库会存为 NULL）
+                cleaned[col_name] = None
+            else:
+                # 情况 3：目标表 NOT NULL，必须在代码层给一个极其安全的真实兜底值
+                if isinstance(col.type, (String, Text)):
+                    cleaned[col_name] = ""
+                elif isinstance(col.type, (Integer, Numeric)):
+                    cleaned[col_name] = 0
+                elif isinstance(col.type, Boolean):
+                    cleaned[col_name] = False
+                elif isinstance(col.type, (DateTime, Date)):
+                    cleaned[col_name] = datetime.now()  # 或赋予一个极小值如 datetime(1970,1,1)
+                elif isinstance(col.type, JSON):
+                    cleaned[col_name] = {}
+                else:
+                    # 极其冷门的类型
+                    cleaned[col_name] = None
+
+        return cleaned
 
     def main(self) -> dict:
         """ """

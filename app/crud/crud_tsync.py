@@ -77,12 +77,6 @@ class CRUDCollectTask:
         db.execute(stmt)
         db.commit()
 
-
-crud_task = CRUDCollectTask()
-
-
-# region ---- 仪表盘统计 ----
-class CRUDTask:
     def get_dashboard_data(self, db: Session):
         today = datetime.now().date()
         today_filter = func.date(TaskLog.start_time) == today
@@ -118,4 +112,6 @@ class CRUDTask:
             "today_records": int(today_recs),
             "success_rate": success_rate
         }
-# endregion
+
+
+crud_task = CRUDCollectTask()

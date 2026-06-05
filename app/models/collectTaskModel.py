@@ -24,7 +24,7 @@ class CollectTask(Base, BaseModelMixin):
     # 完整的 SA2.0 逻辑关联
     source_id: Mapped[str] = mapped_column(String(32), comment="关联的数据源ID")
 
-    topic_or_table: Mapped[str] = mapped_column(String(100), nullable=False, comment="目标表名或MQTT Topic")
+    topic_or_table: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="custom_sql模式下目标库写入表名")
     schedule_cron: Mapped[str | None] = mapped_column(String(50), nullable=True,
                                                       comment="定时任务表达式，为空则表示常驻流式任务")
     status: Mapped[int] = mapped_column(Integer, default=1, comment="任务状态：0停用, 1启用")
