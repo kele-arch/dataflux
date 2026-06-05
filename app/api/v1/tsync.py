@@ -22,7 +22,6 @@ from app.services.sync_service import sync_database_architecture_and_data, Datab
 from app.com.decorators import measure_time
 from app.db.session import get_db
 from app.core import logger
-from app.core.logger_route import OperationLogRoute
 
 router = APIRouter(prefix="/tsync", tags=["数据同步任务管理"])
 

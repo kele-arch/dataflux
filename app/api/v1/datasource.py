@@ -19,7 +19,6 @@ from app.schemas.datasource import (
     DataSourcePageQueryReq, DataSourceOut, DataSourceBase, DataSourcePageOut
 )
 from app.crud.crud_datasource import crud_datasource
-from app.core.logger_route import OperationLogRoute
 
 router = APIRouter(prefix="/datasource", tags=["数据源管理"])
 
