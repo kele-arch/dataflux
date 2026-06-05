@@ -6,14 +6,13 @@
 # Copyright (c) 2026 by 胡H, All Rights Reserved.
 # @desc:
 
-from sqlalchemy import select, update, delete, func
+from sqlalchemy import select, update, delete, func, case
 from sqlalchemy.orm import Session
+from datetime import datetime
 
 from app.models.collectTaskModel import CollectTask
+from app.models.taskLogModel import TaskLog
 from app.schemas.tsync import TaskCreateReq, TaskUpdateReq, TaskPageQueryReq
-
-
-# 假设你的 SQLAlchemy 模型名为 CollectTask
 
 
 class CRUDCollectTask:
@@ -79,5 +78,44 @@ class CRUDCollectTask:
         db.commit()
 
 
-# 实例化一个全局可用的 crud 对象
 crud_task = CRUDCollectTask()
+
+
+# region ---- 仪表盘统计 ----
+class CRUDTask:
+    def get_dashboard_data(self, db: Session):
+        today = datetime.now().date()
+        today_filter = func.date(TaskLog.start_time) == today
+
+        # 统计总量和成功量 (SA 2.0 风格)
+        stats_stmt = select(
+            func.count(TaskLog.id).label("total_logs"),
+            func.sum(case((TaskLog.status == "success", 1), else_=0)).label("success_logs")
+        ).where(today_filter)
+        stats = db.execute(stats_stmt).first()
+
+        total_logs = stats[0] or 0
+        success_logs = stats[1] or 0
+
+        # 计算成功率
+        success_rate = 0.0
+        if total_logs > 0:
+            success_rate = round((success_logs / total_logs) * 100, 2)
+
+        # 统计今日总记录数
+        today_recs_stmt = select(func.sum(TaskLog.total_records)).where(today_filter)
+        today_recs = db.execute(today_recs_stmt).scalar() or 0
+
+        # 任务统计
+        total_tasks = db.execute(select(func.count(CollectTask.id))).scalar() or 0
+        active_tasks = db.execute(
+            select(func.count(CollectTask.id)).where(CollectTask.status == 1)
+        ).scalar() or 0
+
+        return {
+            "total_tasks": total_tasks,
+            "active_tasks": active_tasks,
+            "today_records": int(today_recs),
+            "success_rate": success_rate
+        }
+# endregion

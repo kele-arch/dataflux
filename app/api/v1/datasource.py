@@ -8,8 +8,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import create_engine
-from urllib.parse import quote_plus
+from sqlalchemy import create_engine, inspect
 from typing import List
 
 from app.db.session import get_db
@@ -19,6 +18,7 @@ from app.schemas.datasource import (
     DataSourcePageQueryReq, DataSourceOut, DataSourceBase, DataSourcePageOut
 )
 from app.crud.crud_datasource import crud_datasource
+from app.utils.db_helper import build_db_url
 
 router = APIRouter(prefix="/datasource", tags=["数据源管理"])
 
@@ -26,21 +26,14 @@ router = APIRouter(prefix="/datasource", tags=["数据源管理"])
 @router.post("/test_connect", summary="测试数据库连接", response_model=BaseResponse)
 def test_db_connection(req: DataSourceBase):
     try:
-        db_type = req.type.lower()
-        safe_pwd = quote_plus(req.password) if req.password else ""
-        charset = (req.config_json or {}).get("charset", "utf8mb4")
-
-        if db_type == "mysql":
-            url = f"mysql+pymysql://{req.username}:{safe_pwd}@{req.host}:{req.port}/{req.db_name}?charset={charset}"
-        elif db_type == "postgresql":
-            url = f"postgresql+psycopg2://{req.username}:{safe_pwd}@{req.host}:{req.port}/{req.db_name}"
-        else:
-            return BaseResponse(code=0, msg=f"暂不支持测试该类型: {req.type}")
+        url = build_db_url(req)
 
         engine = create_engine(url, connect_args={"connect_timeout": 3})
-
-        with engine.connect() as conn:
-            pass
+        try:
+            with engine.connect():
+                pass
+        finally:
+            engine.dispose()
 
         return BaseResponse(msg="连接成功！数据库通信正常。")
 
@@ -58,7 +51,7 @@ def add_datasource(req: DataSourceCreateReq, db: Session = Depends(get_db)):
 def update_datasource(req: DataSourceUpdateReq, db: Session = Depends(get_db)):
     success = crud_datasource.update(db, req)
     if not success:
-        raise HTTPException(status_code=400, detail=f"该场景下已存在名为 [{req.name}] 的实体")
+        return BaseResponse(code=0, msg=f"该场景下已存在名为 [{req.name}] 的实体")
     return BaseResponse(msg="数据源更新成功")
 
 
@@ -76,3 +69,21 @@ def get_datasource_list(req: DataSourcePageQueryReq, db: Session = Depends(get_d
     total, items = crud_datasource.get_list(db, req)
 
     return BaseResponse(data={"total": total, "items": items}, msg="获取成功")
+
+
+@router.post("/tables", summary="获取该数据源下的所有表名", response_model=BaseResponse[List[str]])
+def get_datasource_tables(req: DataSourceIdReq, db: Session = Depends(get_db)):
+    source = crud_datasource.get_by_id(db, req.source_id)
+    if not source:
+        return BaseResponse(code=0, msg="数据源不存在")
+
+    try:
+        url = build_db_url(source)
+        engine = create_engine(url, connect_args={"connect_timeout": 3})
+        try:
+            inspector = inspect(engine)
+            return BaseResponse(data=inspector.get_table_names(), msg="获取成功")
+        finally:
+            engine.dispose()
+    except Exception as e:
+        return BaseResponse(code=0, msg=f"连接失败: {str(e)}")

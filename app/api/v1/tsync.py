@@ -16,7 +16,8 @@ from app.crud.crud_tsync import crud_task
 from app.models.collectTaskModel import CollectTask
 from app.models.dataSourceModel import DataSource
 from app.models.taskLogModel import TaskLog
-from app.schemas.tsync import DBSyncReq, TaskIdReq, TaskUpdateReq, TaskCreateReq, TaskPageQueryReq, TaskPageOut
+from app.schemas.tsync import DBSyncReq, TaskIdReq, TaskUpdateReq, TaskCreateReq, TaskPageQueryReq, TaskPageOut, \
+    TaskOut, DashboardOut
 from app.schemas.response import BaseResponse
 from app.services.sync_service import sync_database_architecture_and_data, DatabaseSyncEngine
 from app.com.decorators import measure_time
@@ -140,4 +141,21 @@ def run_sync_task(req: TaskIdReq, db: Session = Depends(get_db)):
         db.commit()
         return BaseResponse(code=0, msg=f"执行失败: {str(e)}")
 
+
+@router.post("/detail", summary="获取任务详情", response_model=BaseResponse[TaskOut])
+def get_task_detail(req: TaskIdReq, db: Session = Depends(get_db)):
+    task = crud_task.get_by_id(db, req.task_id)
+    if not task:
+        return BaseResponse(code=0, msg="任务不存在")
+    return BaseResponse(data=TaskOut.model_validate(task), msg="获取成功")
+
+
+# endregion
+
+
+# region ---- 仪表盘统计 ----
+@router.post("/dashboard", summary="仪表盘统计", response_model=BaseResponse[DashboardOut])
+def get_dashboard_stats(db: Session = Depends(get_db)):
+    data = crud_task.get_dashboard_data(db)
+    return BaseResponse(data=data, msg="获取成功")
 # endregion

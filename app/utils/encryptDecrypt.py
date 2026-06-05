@@ -49,9 +49,6 @@ def encrypt_to_web(data):
 
 
 def decrypt_to_web(base64_encrypted_text: str) -> str:
-    # return base64_encrypted_text
-    print("入参：", datetime.now())
-    print(base64_encrypted_text)
     # 将 Base64 编码的密文解码为原始字节数据
     encrypted_data = base64.b64decode(base64_encrypted_text)
 

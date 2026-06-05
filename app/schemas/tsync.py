@@ -104,4 +104,14 @@ class TaskPageOut(BaseModel):
     total: int
     items: List[TaskOut]
     model_config = ConfigDict(from_attributes=True)
+
+
+# endregion
+
+# region ---- 仪表盘统计 ----
+class DashboardOut(BaseModel):
+    total_tasks: int
+    active_tasks: int
+    today_records: int
+    success_rate: float
 # endregion
