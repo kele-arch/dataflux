@@ -18,4 +18,8 @@ dependencies = [
     "psycopg2-binary>=2.9.11",
     "python-jose[cryptography]>=3.5.0",
     "passlib[bcrypt]>=1.7.4",
+    "confluent-kafka>=2.14.2",
+    "pycryptodome>=3.23.0",
+    "redis==7.2.1",
+    "pymssql>=2.3.13",
 ]
