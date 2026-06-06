@@ -22,4 +22,9 @@ dependencies = [
     "pycryptodome>=3.23.0",
     "redis==7.2.1",
     "pymssql>=2.3.13",
+    "arq>=0.25.0",
+    "apscheduler>=3.11.2",
+    "pymupdf>=1.27.2.3",
+    "pymupdf4llm>=1.27.2.3",
+    "pyinstaller>=6.20.0",
 ]
