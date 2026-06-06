@@ -16,7 +16,7 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.crud.crud_tsync import crud_task
 from app.models.dataSourceModel import DataSource
-from app.models.taskLogModel import TaskLog
+from app.models.taskLogModel import TaskLog, SyncExecutionLog
 from app.services.sync_service import DatabaseSyncEngine
 from app.core import logger
 from app.schemas.tsync import DBSyncReq
@@ -101,6 +101,25 @@ async def run_sync_job(ctx, task_id: str):
             "watermark_after": str(new_watermark) if new_watermark else None,
             "tables": result.get("table_details", [])
         }
+
+        # 构建表级执行日志（映射流水）
+        table_details = result.get("table_details", [])
+        execution_logs = []
+        for detail in table_details:
+            execution_logs.append(SyncExecutionLog(
+                log_id=task_log.id,
+                task_id=task.id,
+                source_table=detail.get("name", "unknown"),
+                target_table=detail.get("name", "unknown"),
+                sync_mode=sync_req.sync_mode,
+                collect_mode=sync_req.collect_mode,
+                records_count=detail.get("records", 0),
+                cost_seconds=detail.get("cost_seconds", 0),
+                watermark=detail.get("high_watermark"),
+                status="success"
+            ))
+        if execution_logs:
+            db.add_all(execution_logs)
 
         task_log.status = "success"
         task_log.end_time = datetime.now()
