@@ -60,6 +60,10 @@ class TaskCreateReq(BaseDecryptReq):
     # source_id: str = Field(..., description="关联的数据源ID")
     source_id: Optional[str] = Field(default=None, description="数据源ID")
     topic_or_table: Optional[str] = Field(default=None, description="custom_sql模式下目标库写入表名，普通模式可不传")
+
+    schedule_type: str = Field(default="none", description="调度类型: none, cron, interval_min, daily, weekly")
+    schedule_value: Optional[str] = Field(default=None, description="配合 type 使用的值，如 '02:30'")
+
     schedule_cron: Optional[str] = Field(default=None, description="定时任务表达式")
     status: int = Field(default=1, description="任务状态：0停用, 1启用")
     sync_mode: str = Field(default="overwrite", description="冲突策略")
@@ -73,6 +77,8 @@ class TaskCreateReq(BaseDecryptReq):
 
 class TaskUpdateReq(TaskCreateReq):
     task_id: str = Field(..., min_length=32, max_length=32, description="要更新的任务ID(UUID)")
+    schedule_type: Optional[str] = Field(default=None)
+    schedule_value: Optional[str] = Field(default=None)
 
 
 class TaskIdReq(BaseDecryptReq):
@@ -94,7 +100,7 @@ class TaskPageQueryReq(BaseDecryptReq):
 class TaskOut(BaseModel):
     id: str
     task_name: str
-    source_id: str
+    source_id: Optional[str] = None
     topic_or_table: Optional[str]
     status: int
     sync_mode: str

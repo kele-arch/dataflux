@@ -21,6 +21,8 @@ from app.com.decorators import measure_time
 from app.db.session import get_db
 from app.core import logger
 from app.services.scheduler_service import refresh_scheduler_jobs
+from app.utils.cron_helper import generate_cron_expression
+from app.services.task_control import set_task_status, TASK_PAUSED, TASK_CANCELLED, TASK_RUNNING
 
 router = APIRouter(prefix="/tsync", tags=["数据同步任务管理"])
 
@@ -46,18 +48,41 @@ def get_task_list(req: TaskPageQueryReq, db: Session = Depends(get_db)):
 
 @router.post("/add", summary="新增同步任务", response_model=BaseResponse)
 def add_task(req: TaskCreateReq, db: Session = Depends(get_db)):
-    obj = crud_task.create(db, req)
-    refresh_scheduler_jobs()
-    return BaseResponse(data={"id": obj.id}, msg="任务创建成功")
+    try:
+        # 拦截参数,翻译生成标准的 Cron 表达式
+        cron_str = generate_cron_expression(req.schedule_type, req.schedule_value)
+
+        # 直接赋值给原请求对象,对底层的 CRUD 零侵入
+        req.schedule_cron = cron_str
+
+        obj = crud_task.create(db, req)
+        refresh_scheduler_jobs()
+
+        return BaseResponse(data={"id": obj.id}, msg="任务创建成功")
+
+    except ValueError as e:
+        # 捕获我们在翻译层抛出的不合法异常
+        return BaseResponse(code=0, msg=str(e))
 
 
 @router.post("/update", summary="修改同步任务配置", response_model=BaseResponse)
 def update_task(req: TaskUpdateReq, db: Session = Depends(get_db)):
-    success = crud_task.update(db, req)
-    if not success:
-        return BaseResponse(code=0, msg="任务不存在或更新失败")
-    refresh_scheduler_jobs()
-    return BaseResponse(msg="任务更新成功")
+    try:
+        # 判断前端是否传了调度相关的修改
+        if req.schedule_type is not None:
+            cron_str = generate_cron_expression(req.schedule_type, req.schedule_value)
+            req.schedule_cron = cron_str
+
+        success = crud_task.update(db, req)
+        if not success:
+            return BaseResponse(code=0, msg="任务不存在或更新失败")
+
+        refresh_scheduler_jobs()
+
+        return BaseResponse(msg="任务更新成功")
+
+    except ValueError as e:
+        return BaseResponse(code=0, msg=str(e))
 
 
 @router.post("/delete", summary="删除同步任务", response_model=BaseResponse)
@@ -103,7 +128,29 @@ async def run_sync_task(req: TaskIdReq, db: Session = Depends(get_db)):
         return BaseResponse(msg="执行指令已下发至后台队列,请稍后在日志中查看进度")
     else:
         logger.error("ARQ 队列池未初始化,无法下发手动执行任务")
-        return BaseResponse(code=0, msg="系统队列服务未就绪，下发失败")
+        return BaseResponse(code=0, msg="系统队列服务未就绪, 下发失败")
+
+
+# region ---- 任务状态控制 (中断/恢复) ----
+@router.post("/pause", summary="暂停正在执行的任务", response_model=BaseResponse)
+def pause_task(req: TaskIdReq):
+    set_task_status(req.task_id, TASK_PAUSED)
+    return BaseResponse(msg="暂停指令已下发, 任务将在当前批次完成后优雅暂停")
+
+
+@router.post("/cancel", summary="取消正在执行的任务", response_model=BaseResponse)
+def cancel_task(req: TaskIdReq):
+    set_task_status(req.task_id, TASK_CANCELLED)
+    return BaseResponse(msg="取消指令已下发, 任务将立即终止")
+
+
+@router.post("/resume", summary="清理中断状态(恢复默认)", response_model=BaseResponse)
+def resume_task(req: TaskIdReq):
+    set_task_status(req.task_id, TASK_RUNNING)
+    return BaseResponse(msg="状态锁已清理, 任务下一次将正常运行")
+
+
+# endregion
 
 
 @router.post("/detail", summary="获取任务详情", response_model=BaseResponse[TaskOut])
