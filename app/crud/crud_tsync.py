@@ -40,6 +40,13 @@ class CRUDCollectTask:
         db.commit()
         return result.rowcount > 0
 
+    def change_status(self, db: Session, task_id: str, status: int) -> bool:
+        """ 切换任务启用/停用状态 """
+        stmt = update(CollectTask).where(CollectTask.id == task_id).values(status=status)
+        result = db.execute(stmt)
+        db.commit()
+        return result.rowcount > 0
+
     def delete(self, db: Session, task_id: int) -> bool:
         """ 删除任务 """
         stmt = delete(CollectTask).where(CollectTask.id == task_id)

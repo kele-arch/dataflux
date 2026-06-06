@@ -14,6 +14,9 @@ from app.schemas.base import BaseDecryptReq
 
 class DBSyncReq(BaseDecryptReq):
     """ 接收前端传来的源数据库表单信息 """
+    # 对外接口无影响，仅供后台 Worker 和 Engine 流转使用
+    task_id: Optional[str] = Field(default=None, description="任务唯一标识(内部流转专用)")
+
     db_type: str = Field(..., description="数据库类型：mysql, postgresql, oracle 等")
     host: str = Field(..., description="主机地址 IP")
     port: int = Field(..., description="端口")
@@ -54,7 +57,8 @@ class DBSyncReq(BaseDecryptReq):
 # region ---- 任务管理 ----
 class TaskCreateReq(BaseDecryptReq):
     task_name: str = Field(..., description="任务名称")
-    source_id: str = Field(..., description="关联的数据源ID")
+    # source_id: str = Field(..., description="关联的数据源ID")
+    source_id: Optional[str] = Field(default=None, description="数据源ID")
     topic_or_table: Optional[str] = Field(default=None, description="custom_sql模式下目标库写入表名，普通模式可不传")
     schedule_cron: Optional[str] = Field(default=None, description="定时任务表达式")
     status: int = Field(default=1, description="任务状态：0停用, 1启用")
@@ -73,6 +77,11 @@ class TaskUpdateReq(TaskCreateReq):
 
 class TaskIdReq(BaseDecryptReq):
     task_id: str = Field(..., min_length=32, max_length=32, description="任务ID(UUID)")
+
+
+class TaskStatusReq(BaseDecryptReq):
+    task_id: str = Field(..., min_length=32, max_length=32, description="任务ID(UUID)")
+    status: int = Field(..., description="目标状态: 0=停用, 1=启用")
 
 
 class TaskPageQueryReq(BaseDecryptReq):

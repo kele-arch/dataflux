@@ -1,28 +1,26 @@
 # -- coding: utf-8 --
 # @Author: 胡H
-# @File: tsync.py
+# @File: app/api/v1/tsync.py
 # @Created: 2026/6/5 10:07
 # @LastModified: 
 # Copyright (c) 2026 by 胡H, All Rights Reserved.
-# @desc:
-from datetime import datetime
-from typing import Any
+# @desc: 数据同步任务管理
 
 from fastapi import APIRouter, Depends, HTTPException, Form, Response, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core import arq_pool as arq_module
 from app.crud.crud_tsync import crud_task
 from app.models.collectTaskModel import CollectTask
-from app.models.dataSourceModel import DataSource
-from app.models.taskLogModel import TaskLog
 from app.schemas.tsync import DBSyncReq, TaskIdReq, TaskUpdateReq, TaskCreateReq, TaskPageQueryReq, TaskPageOut, \
-    TaskOut, DashboardOut
+    TaskOut, DashboardOut, TaskStatusReq
 from app.schemas.response import BaseResponse
 from app.services.sync_service import sync_database_architecture_and_data, DatabaseSyncEngine
 from app.com.decorators import measure_time
 from app.db.session import get_db
 from app.core import logger
+from app.services.scheduler_service import refresh_scheduler_jobs
 
 router = APIRouter(prefix="/tsync", tags=["数据同步任务管理"])
 
@@ -49,6 +47,7 @@ def get_task_list(req: TaskPageQueryReq, db: Session = Depends(get_db)):
 @router.post("/add", summary="新增同步任务", response_model=BaseResponse)
 def add_task(req: TaskCreateReq, db: Session = Depends(get_db)):
     obj = crud_task.create(db, req)
+    refresh_scheduler_jobs()
     return BaseResponse(data={"id": obj.id}, msg="任务创建成功")
 
 
@@ -57,6 +56,7 @@ def update_task(req: TaskUpdateReq, db: Session = Depends(get_db)):
     success = crud_task.update(db, req)
     if not success:
         return BaseResponse(code=0, msg="任务不存在或更新失败")
+    refresh_scheduler_jobs()
     return BaseResponse(msg="任务更新成功")
 
 
@@ -65,11 +65,26 @@ def delete_task(req: TaskIdReq, db: Session = Depends(get_db)):
     success = crud_task.delete(db, req.task_id)
     if not success:
         return BaseResponse(code=0, msg="任务不存在")
+    refresh_scheduler_jobs()
     return BaseResponse(msg="删除成功")
 
 
-@router.post("/run", summary="手动执行数据同步任务", response_model=BaseResponse[Any])
-def run_sync_task(req: TaskIdReq, db: Session = Depends(get_db)):
+@router.post("/change_status", summary="切换任务启用/停用", response_model=BaseResponse)
+def change_task_status(req: TaskStatusReq, db: Session = Depends(get_db)):
+    success = crud_task.change_status(db, req.task_id, req.status)
+    if not success:
+        return BaseResponse(code=0, msg="任务不存在")
+    refresh_scheduler_jobs()
+    label = "启用" if req.status == 1 else "停用"
+    return BaseResponse(msg=f"任务已{label}")
+
+
+@router.post("/run", summary="手动执行数据同步任务", response_model=BaseResponse)
+async def run_sync_task(req: TaskIdReq, db: Session = Depends(get_db)):
+    """
+   纯异步下发接口
+    """
+    # 确认任务存在且处于启用状态
     task = db.execute(select(CollectTask).where(CollectTask.id == req.task_id)).scalar_one_or_none()
     if not task:
         return BaseResponse(code=0, msg="任务不存在")
@@ -77,69 +92,18 @@ def run_sync_task(req: TaskIdReq, db: Session = Depends(get_db)):
     if task.status == 0:
         return BaseResponse(code=0, msg="任务处于停用状态, 无法执行")
 
-    source = db.execute(select(DataSource).where(DataSource.id == task.source_id)).scalar_one_or_none()
-    if not source:
-        return BaseResponse(code=0, msg="关联的数据源不存在")
+    # 将耗时的同步任务扔给后台独立 Worker 进程
+    if arq_module.arq_pool:
 
-    db_name = getattr(source, "db_name", None) or (source.config_json or {}).get("db_name")
-    if not db_name:
-        return BaseResponse(code=0, msg="数据源缺少 db_name 配置")
+        await arq_module.arq_pool.enqueue_job('run_sync_job', task.id)
 
-    sync_req = DBSyncReq(
-        db_type=source.type,
-        host=source.host,
-        port=source.port,
-        username=source.username,
-        password=source.password,
-        db_name=db_name,
-        target_table=task.topic_or_table,
-        sync_tables=task.sync_tables,
-        sync_mode=getattr(task, "sync_mode", "overwrite"),
-        collect_mode=task.collect_mode,
-        incremental_column=task.incremental_column,
-        last_watermark=task.last_watermark,
-        custom_sql=task.custom_sql
-    )
+        logger.info(f"手动触发同步任务 -> [ID:{task.id} 名称:{task.task_name}], 已推入后台队列")
 
-    task_log = TaskLog(
-        task_id=task.id,
-        task_name=task.task_name,
-        status="running",
-        start_time=datetime.now()
-    )
-    db.add(task_log)
-    db.commit()
-    db.refresh(task_log)  # 获取生成的 log_id
-
-    try:
-        logger.info(f"触发同步任务 -> [ID:{task.id} 名称:{task.task_name}]")
-        engine = DatabaseSyncEngine(sync_req)
-
-        result = engine.main()
-
-        new_watermark = result.get("new_watermark")
-        if new_watermark:
-            task.last_watermark = str(new_watermark)
-            db.commit()
-            logger.info(f"任务[{task.task_name}] 高水位线已自动更新为: {new_watermark}")
-
-        task_log.status = "success"
-        task_log.end_time = datetime.now()
-        task_log.tables_synced = result.get("tables_synced", 0)
-        task_log.total_records = result.get("total_records", 0)
-        db.commit()
-
-        return BaseResponse(data=result, msg="任务执行完毕")
-
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f"任务执行异常: {error_msg}")
-
-        task_log.status = "failed"
-        task_log.end_time = datetime.now()
-        task_log.error_msg = error_msg
-        db.commit()
-        return BaseResponse(code=0, msg=f"执行失败: {str(e)}")
+        # 立即响应前端,不等待执行结果
+        return BaseResponse(msg="执行指令已下发至后台队列,请稍后在日志中查看进度")
+    else:
+        logger.error("ARQ 队列池未初始化,无法下发手动执行任务")
+        return BaseResponse(code=0, msg="系统队列服务未就绪，下发失败")
 
 
 @router.post("/detail", summary="获取任务详情", response_model=BaseResponse[TaskOut])
