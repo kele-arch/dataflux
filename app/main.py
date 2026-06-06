@@ -5,6 +5,7 @@
 # @LastModified: 
 # Copyright (c) 2025 by 胡H, All Rights Reserved.
 # @desc: man!!!
+
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI
@@ -16,6 +17,8 @@ from app.db.session import init_db, engine
 from app.core.config import settings
 from app.core import logger
 from app.middleware import init_middlewares
+from app.core.arq_pool import init_arq_pool, close_arq_pool
+from app.services.scheduler_service import scheduler, refresh_scheduler_jobs
 
 
 @asynccontextmanager
@@ -51,18 +54,41 @@ async def lifespan(app: FastAPI):
             raise  # 终止启动
         else:
             logger.warning(f"Redis 连接失败, 已忽略. 错误: {e}")
+    # 队列 Redis 池 (专门负责下发 ARQ 任务)
+    try:
+        await init_arq_pool()
+        logger.success("ARQ 队列池连接成功")
+    except Exception as e:
+        logger.error(f"ARQ 队列池连接失败! 错误: {e}")
 
-    logger.success("verification-support 工程初始化完成")
+    # 启动 APScheduler 定时器大脑
+    try:
+        scheduler.start()
+        refresh_scheduler_jobs()  # 首次启动把数据库里的任务刷入内存
+        logger.success("APScheduler 定时调度系统已启动")
+    except Exception as e:
+        logger.error(f"调度系统启动失败! 错误: {e}")
+
+    logger.success("dataflux 工程初始化完成")
 
     yield  # <- 应用开始运行.  yield 之后的代码会在应用关闭时执行
     # 关闭前如果有资源要释放可以写这里(例如关闭数据库连接、Redis 连接等)
 
-    await close_redis()  # 关闭 Redis 连接
+    logger.info("正在执行资源释放并关机...")
+    # 停掉定时器
+    if scheduler.running:
+        scheduler.shutdown()
+        logger.info("调度系统已关闭")
+
+    # 关闭两个 Redis 连接池
+    await close_arq_pool()
+    await close_redis()
+
     logger.info('程序执行结束')
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Form Service", version="0.1", lifespan=lifespan)
+    app = FastAPI(title="dataflux", version="0.1", lifespan=lifespan)
 
     # 中间件配置
     app.add_middleware(
@@ -82,8 +108,45 @@ def create_app() -> FastAPI:
 
 app = create_app()
 
+
+def run_arq_worker():
+    """ 子进程入口: 运行 Arq Worker """
+    import asyncio
+    from arq.worker import run_worker
+    from app.worker import WorkerSettings
+
+    # 因为是在新进程里，需要新建一个独立的事件循环
+    asyncio.run(run_worker(WorkerSettings))
+
+
 if __name__ == "__main__":
     import uvicorn
+    import multiprocessing
+    import atexit
 
-    # uvicorn.run("app.main:app", host=settings.SERVER_HOST, port=settings.SERVER_PORT, reload=True)  # 正常环境使用这个
-    uvicorn.run(app, host=settings.SERVER_HOST, port=settings.SERVER_PORT, reload=False)  # 打包 exe 使用这个
+    # 帮助 Windows 打包成 exe 后能正确启动子进程，防止无限递归爆炸
+    multiprocessing.freeze_support()
+
+    logger.info("准备启动 FastAPI 主服务与 Arq Worker 独立进程...")
+
+    # 在后台启动 Arq Worker 子进程
+    worker_process = multiprocessing.Process(target=run_arq_worker, daemon=True)
+    worker_process.start()
+    logger.success(f"Arq 后台 Worker 进程已启动! (PID: {worker_process.pid})")
+
+
+    # 注册退出清理函数
+    def cleanup_worker():
+        """ 确保主进程被干掉时, 带走 Worker 孤儿进程 """
+        logger.info("正在安全关闭 Arq Worker 子进程...")
+        worker_process.terminate()
+        worker_process.join(timeout=3)  # 等待最多 3 秒让它处理后事
+        if worker_process.is_alive():  # 超时仍未退出则强制击杀
+            worker_process.kill()
+        logger.info("Arq Worker 进程已成功退出.")
+
+
+    atexit.register(cleanup_worker)
+
+    # 启动 Uvicorn 主进程
+    uvicorn.run(app, host=settings.SERVER_HOST, port=settings.SERVER_PORT, reload=False)
