@@ -5,7 +5,7 @@
 # @LastModified: 
 # Copyright (c) 2026 by 胡H, All Rights Reserved.
 # @desc:
-from sqlalchemy import String, Integer, Text, DateTime
+from sqlalchemy import String, Integer, Text, DateTime, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime
 from app.db.base import Base
@@ -31,5 +31,7 @@ class TaskLog(Base, BaseModelMixin):
     # 统计数据
     tables_synced: Mapped[int] = mapped_column(Integer, default=0, comment="同步表数量")
     total_records: Mapped[int] = mapped_column(Integer, default=0, comment="同步总条数")
+
+    detail_json: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="执行详情快照(策略/表名/条数/水位线)")
 
     error_msg: Mapped[str | None] = mapped_column(Text, nullable=True, comment="失败原因")
