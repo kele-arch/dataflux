@@ -33,6 +33,8 @@ class Settings(BaseSettings):
 
     BATCH_SIZE: int = 10  # 批处理大小,默认 10 (任务中每次处理的记录数,处理一批则暂停检测状态)
 
+    TIMEZONE: str = "Asia/Shanghai"  # 默认时区,用于日志时间戳等显示
+
     # 数据库连接池配置
     DB_POOL_SIZE: int = 10  # 基础连接数默认 10
     DB_MAX_OVERFLOW: int = 20  # 最大溢出连接数默认 20

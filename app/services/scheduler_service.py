@@ -14,11 +14,12 @@ from app.db.session import SessionLocal
 from app.core import arq_pool as arq_module
 from app.core import logger
 from app.models.collectTaskModel import CollectTask
-
+from app.core.config import settings
 
 # 初始化 AsyncIOScheduler
 # scheduler = AsyncIOScheduler()
-scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
+scheduler = AsyncIOScheduler(timezone=settings.TIMEZONE)
+
 
 async def trigger_task_to_arq(task_id: str):
     """

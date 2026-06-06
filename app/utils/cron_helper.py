@@ -8,6 +8,8 @@
 
 from apscheduler.triggers.cron import CronTrigger
 
+from app.core.config import settings
+
 
 def generate_cron_expression(schedule_type: str, schedule_value: str) -> str:
     """
@@ -18,7 +20,7 @@ def generate_cron_expression(schedule_type: str, schedule_value: str) -> str:
 
     if schedule_type == "cron":
         try:
-            CronTrigger.from_crontab(schedule_value, timezone="Asia/Shanghai")
+            CronTrigger.from_crontab(schedule_value, timezone=settings.TIMEZONE)
 
         except Exception:
             raise ValueError(f"Cron 表达式格式非法: {schedule_value}，标准格式如 '0 2 * * *'")
