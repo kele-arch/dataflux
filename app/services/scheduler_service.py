@@ -11,7 +11,7 @@ from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 
 from app.db.session import SessionLocal
-from app.core.arq_pool import arq_pool
+from app.core import arq_pool as arq_module
 from app.core import logger
 from app.models.collectTaskModel import CollectTask
 
@@ -23,9 +23,9 @@ async def trigger_task_to_arq(task_id: str):
     """
     时间一到, 不执行业务, 直接把 task_id 扔进 ARQ 队列 
     """
-    if arq_pool:
+    if arq_module.arq_pool:
         # 'run_sync_job' 是要在 worker 里注册的函数名
-        await arq_pool.enqueue_job('run_sync_job', task_id)
+        await arq_module.arq_pool.enqueue_job('run_sync_job', task_id)
         logger.info(f"定时器触发: 任务 [{task_id}] 已推入 ARQ 执行队列")
     else:
         logger.error("ARQ 连接池未初始化, 无法下发任务")
