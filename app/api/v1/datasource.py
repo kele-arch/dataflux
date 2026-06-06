@@ -9,7 +9,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine, inspect
-from typing import List
+from typing import List, Dict, Any
 
 from app.db.session import get_db
 from app.schemas.response import BaseResponse
@@ -83,6 +83,46 @@ def get_datasource_tables(req: DataSourceIdReq, db: Session = Depends(get_db)):
         try:
             inspector = inspect(engine)
             return BaseResponse(data=inspector.get_table_names(), msg="获取成功")
+        finally:
+            engine.dispose()
+    except Exception as e:
+        return BaseResponse(code=0, msg=f"连接失败: {str(e)}")
+
+
+@router.post("/tables/detail", summary="获取表结构详情(含表注释和字段注释)", response_model=BaseResponse[List[Dict[str, Any]]])
+def get_datasource_tables_detail(req: DataSourceIdReq, db: Session = Depends(get_db)):
+    """返回每张表的表名、表注释、字段名、字段类型、字段注释"""
+    source = crud_datasource.get_by_id(db, req.source_id)
+    if not source:
+        return BaseResponse(code=0, msg="数据源不存在")
+
+    try:
+        url = build_db_url(source)
+        engine = create_engine(url, connect_args={"connect_timeout": 3})
+        try:
+            inspector = inspect(engine)
+            result = []
+
+            for table_name in inspector.get_table_names():
+                # 表注释
+                table_comment = (inspector.get_table_comment(table_name) or {}).get("text") or ""
+
+                # 字段信息
+                columns = []
+                for col in inspector.get_columns(table_name):
+                    columns.append({
+                        "name": col["name"],
+                        "type": str(col["type"]),
+                        "comment": col.get("comment") or ""
+                    })
+
+                result.append({
+                    "table_name": table_name,
+                    "table_comment": table_comment,
+                    "columns": columns
+                })
+
+            return BaseResponse(data=result, msg="获取成功")
         finally:
             engine.dispose()
     except Exception as e:
