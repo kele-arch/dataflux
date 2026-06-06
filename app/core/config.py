@@ -31,6 +31,8 @@ class Settings(BaseSettings):
 
     ENABLE_TOKEN: bool = False  # 是否启动登陆验证
 
+    BATCH_SIZE: int = 10  # 批处理大小,默认 10 (任务中每次处理的记录数,处理一批则暂停检测状态)
+
     # 数据库连接池配置
     DB_POOL_SIZE: int = 10  # 基础连接数默认 10
     DB_MAX_OVERFLOW: int = 20  # 最大溢出连接数默认 20
