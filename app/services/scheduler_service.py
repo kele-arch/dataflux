@@ -15,9 +15,10 @@ from app.core import arq_pool as arq_module
 from app.core import logger
 from app.models.collectTaskModel import CollectTask
 
-# 初始化 AsyncIOScheduler
-scheduler = AsyncIOScheduler()
 
+# 初始化 AsyncIOScheduler
+# scheduler = AsyncIOScheduler()
+scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
 
 async def trigger_task_to_arq(task_id: str):
     """
@@ -51,20 +52,24 @@ def refresh_scheduler_jobs():
         count = 0
         for task in tasks:
             try:
-                # 解析 crontab 表达式 (例如: "0 2 * * *")
-                trigger = CronTrigger.from_crontab(task.schedule_cron)
+                if task.schedule_cron:
+                    # 解析 crontab 表达式 (例如: "0 2 * * *")
+                    trigger = CronTrigger.from_crontab(task.schedule_cron)
 
-                # 将任务添加到调度器, 指定 id 方便追踪
-                scheduler.add_job(
-                    trigger_task_to_arq,
-                    trigger=trigger,
-                    args=[task.id],
-                    id=f"job_{task.id}",
-                    replace_existing=True
-                )
-                count += 1
+                    # 将任务添加到调度器, 指定 id 方便追踪
+                    scheduler.add_job(
+                        trigger_task_to_arq,
+                        trigger=trigger,
+                        args=[str(task.id)],
+                        id=f"job_{task.id}",
+                        replace_existing=True
+                    )
+                    count += 1
+
+            except ValueError as ve:
+                logger.error(f"任务 [{task.id}] 的时间表达式解析失败，已跳过: {ve}")
             except Exception as e:
-                logger.error(f"任务 [{task.id}] 的 Cron 表达式解析失败: {e}")
+                logger.error(f"任务 [{task.id}] 挂载定时器失败: {e}")
 
         logger.info(f"调度器刷新完成, 当前共有 {count} 个活跃定时任务")
     finally:
