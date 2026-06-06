@@ -49,6 +49,7 @@ class DataSourceOut(BaseModel):
     port: int
     db_name: Optional[str]
     username: Optional[str]
+    password: Optional[str]
     # 在序列化时过滤掉
     config_json: Optional[dict]
 
