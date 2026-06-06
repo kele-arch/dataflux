@@ -25,6 +25,11 @@ class CollectTask(Base, BaseModelMixin):
     source_id: Mapped[str] = mapped_column(String(32), comment="关联的数据源ID")
 
     topic_or_table: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="custom_sql模式下目标库写入表名")
+
+    schedule_type: Mapped[str] = mapped_column(String(20), default="none",
+                                               comment="调度类型: none, cron, interval_min, daily, weekly")
+    schedule_value: Mapped[str | None] = mapped_column(String(50), nullable=True, comment="调度值 (如 02:30)")
+
     schedule_cron: Mapped[str | None] = mapped_column(String(50), nullable=True,
                                                       comment="定时任务表达式，为空则表示常驻流式任务")
     status: Mapped[int] = mapped_column(Integer, default=1, comment="任务状态：0停用, 1启用")
