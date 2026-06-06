@@ -21,14 +21,30 @@ from app.services.sync_service import DatabaseSyncEngine
 from app.core import logger
 from app.schemas.tsync import DBSyncReq
 
+
 async def run_sync_job(ctx, task_id: str):
     """
-    数据同步独立后台任务: 由 arq Worker 调度执行
+    数据同步独立后台任务: 由 arq Worker 调度执行 (附带 Redis 分布式排他锁)
     """
-    db = SessionLocal()
+    # 从 ARQ 上下文中提取异步 Redis 客户端
+    redis = ctx['redis']
+    lock_key = f"sync_task_lock:{task_id}"
+
+    # 获取分布式锁 (nx=True 防止并发覆盖, ex=7200 设置 2 小时硬过期防死锁)
+    acquired = await redis.set(lock_key, "locked", nx=True, ex=7200)
+    if not acquired:
+        logger.warning(f"防抖拦截: 任务 [{task_id}] 正在执行中, 已静默丢弃本次重复下发指令！")
+        return
+
+    logger.info(f"任务 [{task_id}] 成功获取分布式锁, 准备启动同步流程...")
+
+    # 提前声明变量, 防止在 try 块抛异常后 finally 找不到报错
+    db = None
+    task_log = None
     start_time = time.time()
 
     try:
+        db = SessionLocal()  # 拿到锁之后, 再真正开启数据库连接
         logger.info(f"Worker 开始处理数据同步任务: task_id={task_id}")
 
         # 获取任务配置
@@ -44,6 +60,7 @@ async def run_sync_job(ctx, task_id: str):
         if not source:
             logger.error(f"数据源不存在: {task.source_id}")
             return
+
         db_name = getattr(source, "db_name", None) or (source.config_json or {}).get("db_name")
         if not db_name:
             logger.error(f"数据源缺少 db_name")
@@ -79,10 +96,22 @@ async def run_sync_job(ctx, task_id: str):
 
         # 在线程池中执行同步
         def _execute():
-            engine = DatabaseSyncEngine(req=sync_req)  # 移除 db 参数 , 使用默认引擎
+            engine = DatabaseSyncEngine(req=sync_req)  # 使用默认引擎
             return engine.main()
 
         result = await asyncio.to_thread(_execute)
+
+        # 获取真实运行状态
+        job_status = result.get("status", "success")
+        
+        # 如果被中断或取消, 立刻更新日志并安全退出
+        if job_status in ["paused", "cancelled"]:
+            task_log.status = job_status
+            task_log.end_time = datetime.now()
+            task_log.error_msg = result.get("message", f"任务已响应中断指令: {job_status}")
+            db.commit()
+            logger.warning(f"任务 [{task_id}] 提前终止, 状态更新为: {job_status}")
+            return
 
         # 更新 TaskLog + 水位线
         new_watermark = result.get("new_watermark")
@@ -118,10 +147,12 @@ async def run_sync_job(ctx, task_id: str):
                 watermark=detail.get("high_watermark"),
                 status="success"
             ))
+
         if execution_logs:
             db.add_all(execution_logs)
 
         task_log.status = "success"
+
         task_log.end_time = datetime.now()
         task_log.tables_synced = result.get("tables_synced", 0)
         task_log.total_records = result.get("total_records", 0)
@@ -132,17 +163,31 @@ async def run_sync_job(ctx, task_id: str):
 
     except asyncio.CancelledError:
         logger.error(f"Worker 超时被杀: {task_id}")
-    except Exception as e:
-        logger.error(f"Worker 同步失败: {task_id}, Error: {e}")
-        try:
+        if task_log and db:
             task_log.status = "failed"
             task_log.end_time = datetime.now()
-            task_log.error_msg = str(e)[:2000]
+            task_log.error_msg = "任务超时被强杀"
             db.commit()
-        except Exception:
-            db.rollback()
+
+    except Exception as e:
+        logger.error(f"Worker 同步失败: {task_id}, Error: {e}")
+        if task_log and db:
+            try:
+                task_log.status = "failed"
+                task_log.end_time = datetime.now()
+                task_log.error_msg = str(e)[:2000]
+                db.commit()
+            except Exception:
+                db.rollback()
+
     finally:
-        db.close()
+        # 关闭数据库连接
+        if db:
+            db.close()
+
+        # 安全释放分布式锁 (无论报错与否, 确保锁被回收)
+        await redis.delete(lock_key)
+        logger.info(f"任务 [{task_id}] 已安全释放排他锁")
 
 
 # 解析 Redis 配置
