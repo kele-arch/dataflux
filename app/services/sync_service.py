@@ -19,7 +19,9 @@ from app.core import logger
 from app.db.session import engine as global_target_engine
 from app.schemas.tsync import DBSyncReq
 from app.services.dialects import get_dialect_handler
-
+from app.services.task_control import get_task_status, save_watermark, TASK_PAUSED, TASK_CANCELLED
+from app.exceptions import TaskPausedException, TaskCancelledException
+from app.core.config import settings
 
 class DatabaseSyncEngine:
     """ 异构数据库同步引擎核心类
@@ -30,7 +32,7 @@ class DatabaseSyncEngine:
         self.req = req
         self.target_engine = target_engine
         self.sync_mode = req.sync_mode
-        self.batch_size = 1000
+        self.batch_size = settings.BATCH_SIZE
 
         # 动态构建数据源 URL
         self.source_url = self._build_sqlalchemy_url()
@@ -162,6 +164,9 @@ class DatabaseSyncEngine:
             self._execute_upsert(t_conn, target_table, batch_data, pk_cols)
             total_inserted += len(batch_data)
 
+            # 写完之后再探测,保证这批数据已安全落库
+            self._check_task_status()
+
         return total_inserted
 
     def _migrate_data(self) -> tuple:
@@ -169,14 +174,25 @@ class DatabaseSyncEngine:
         logger.info(f"开始进行数据流式搬运, 冲突策略: [{self.sync_mode}], 采集模式: [{self.req.collect_mode}] ...")
         total_records_migrated = 0
         global_max_watermark = None  # 全局最大水位线, 用于记录整个迁移过程的最高时间戳
+        table_details = []  # 收集每张表的执行明细
 
         with self.source_engine.connect() as s_conn, self.target_engine.begin() as t_conn:
 
             if self.req.collect_mode == "custom_sql":
+                start_time = time.time()
                 total = self._migrate_custom_sql(s_conn, t_conn)
-                return total, None  # custom_sql 不记录水位
+                elapsed = round(time.time() - start_time, 2)
+                table_details.append({
+                    "name": self.req.target_table,
+                    "records": total,
+                    "cost_seconds": elapsed
+                })
+                return total, None, table_details
 
             for table_name, source_table in self.source_metadata.tables.items():
+
+                self._check_task_status(global_max_watermark)  # 每张表开始前探测
+
                 logger.info(f"->正在同步表: [{table_name}] ...")
                 start_time = time.time()
 
@@ -217,22 +233,33 @@ class DatabaseSyncEngine:
                         inserted_count += len(batch_data)
                         batch_data.clear()
 
+                        # 使用当前表的最高水位线,或者回退到全局水位线
+                        self._check_task_status(current_max_watermark or global_max_watermark)
+
                 # 尾部处理
                 if batch_data:
                     self._execute_upsert(t_conn, target_table, batch_data, pk_cols)
                     inserted_count += len(batch_data)
 
                 total_records_migrated += inserted_count
-                elapsed = time.time() - start_time
+                elapsed = round(time.time() - start_time, 2)
+
+                # 收集单表执行明细
+                table_details.append({
+                    "name": table_name,
+                    "records": inserted_count,
+                    "cost_seconds": elapsed,
+                    "high_watermark": str(current_max_watermark) if current_max_watermark else None
+                })
 
                 watermark_log = f" (产生新水位线: {current_max_watermark})" if current_max_watermark else ""
-                logger.info(f"   [{table_name}] 完成！迁移 {inserted_count} 条, 耗时 {elapsed:.2f} 秒{watermark_log}")
+                logger.info(f"   [{table_name}] 完成！迁移 {inserted_count} 条, 耗时 {elapsed} 秒{watermark_log}")
 
                 if current_max_watermark:
                     if global_max_watermark is None or current_max_watermark > global_max_watermark:
                         global_max_watermark = current_max_watermark
 
-        return total_records_migrated, global_max_watermark
+        return total_records_migrated, global_max_watermark, table_details
 
     def _build_extract_query(self, source_table, task_config):
         """
@@ -302,6 +329,25 @@ class DatabaseSyncEngine:
 
         return cleaned
 
+    def _check_task_status(self, current_watermark=None):
+        """
+        探测 Redis 状态位, 决定是否中断。
+        在每个安全的 batch 边界调用, 确保中断时数据已落库且连接可安全释放
+        """
+
+        task_id = str(self.req.task_id)
+
+        status = get_task_status(task_id)
+
+        if status == TASK_PAUSED:
+            save_watermark(task_id, current_watermark)
+            logger.warning(f"任务 [{task_id}] 接收到暂停指令, 已保存断点水位线: {current_watermark}")
+            raise TaskPausedException(f"任务已暂停, 水位线保存至: {current_watermark}")
+
+        if status == TASK_CANCELLED:
+            logger.warning(f"任务 [{task_id}] 接收到取消指令, 强制终止搬运")
+            raise TaskCancelledException("任务已被用户取消")
+
     def main(self) -> dict:
         """ """
         safe_password = quote_plus(self.req.password)
@@ -311,15 +357,23 @@ class DatabaseSyncEngine:
         try:
             table_names = self._reflect_source_schema()
             self._prepare_target_schema()
-            total_records, new_watermark = self._migrate_data()
+            total_records, new_watermark, table_details = self._migrate_data()
 
-            logger.info(f"全库同步完美收官！共迁移 {len(table_names)} 张表, {total_records} 条记录")
+            logger.info(f"全库同步完成！共迁移 {len(table_names)} 张表, {total_records} 条记录")
             return {
                 "status": "success",
                 "tables_synced": len(table_names),
                 "total_records": total_records,
-                "new_watermark": new_watermark
+                "new_watermark": new_watermark,
+                "table_details": table_details
             }
+        except TaskPausedException as e:
+            # 捕获暂停
+            return {"status": "paused", "message": str(e)}
+
+        except TaskCancelledException as e:
+            # 捕获取消
+            return {"status": "cancelled", "message": str(e)}
 
         except SQLAlchemyError as e:
             logger.error(f"数据库迁移引擎引发异常: {str(e)}")
