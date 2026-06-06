@@ -86,13 +86,27 @@ async def run_sync_job(ctx, task_id: str):
 
         # 更新 TaskLog + 水位线
         new_watermark = result.get("new_watermark")
+        old_watermark = task.last_watermark
         if new_watermark:
             task.last_watermark = str(new_watermark)
+
+        # 组装执行详情快照
+        detail_json = {
+            "sync_mode": sync_req.sync_mode,
+            "collect_mode": sync_req.collect_mode,
+            "incremental_column": sync_req.incremental_column,
+            "source_type": sync_req.db_type,
+            "source_db": sync_req.db_name,
+            "watermark_before": old_watermark,
+            "watermark_after": str(new_watermark) if new_watermark else None,
+            "tables": result.get("table_details", [])
+        }
 
         task_log.status = "success"
         task_log.end_time = datetime.now()
         task_log.tables_synced = result.get("tables_synced", 0)
         task_log.total_records = result.get("total_records", 0)
+        task_log.detail_json = detail_json
         db.commit()
 
         logger.info(f"Worker 同步完成: {task_id}, 耗时 {int(time.time() - start_time)}s")
