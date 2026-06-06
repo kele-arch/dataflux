@@ -7,7 +7,7 @@
 # @desc:
 
 from pydantic import Field, BaseModel, ConfigDict
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from app.schemas.base import BaseDecryptReq
 
@@ -15,11 +15,12 @@ from app.schemas.base import BaseDecryptReq
 class LogPageQueryReq(BaseDecryptReq):
     page: int = Field(default=1, ge=1)
     size: int = Field(default=10, ge=1)
-    task_id: str = Field(..., description="关联的任务ID,必传")
+    task_id: Optional[str] = Field(default=None, description="按任务ID过滤,不传则查全量")
     status: Optional[str] = Field(default=None, description="状态过滤: running, success, failed")
 
 
 class TaskLogOut(BaseModel):
+    """列表页单条日志（不含 detail_json，轻量）"""
     id: str
     task_id: str
     task_name: str
@@ -29,10 +30,14 @@ class TaskLogOut(BaseModel):
     tables_synced: int
     total_records: int
     error_msg: Optional[str]
-
     create_time: Optional[datetime]
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class TaskLogDetailOut(TaskLogOut):
+    """日志详情（继承列表项，增加 detail_json）"""
+    detail_json: Optional[Dict[str, Any]] = None
 
 
 class TaskLogPageOut(BaseModel):

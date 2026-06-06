@@ -17,10 +17,13 @@ class CRUDTaskLog:
     """ 任务日志查询 CRUD """
 
     def get_list(self, db: Session, req: LogPageQueryReq) -> tuple[int, list]:
-        # 强制约束只能查某个特定任务的日志，按时间倒序排（最新的在最上面）
-        stmt = select(TaskLog).where(TaskLog.task_id == req.task_id).order_by(TaskLog.start_time.desc())
+        stmt = select(TaskLog).order_by(TaskLog.start_time.desc())
 
-        # 可选的状态过滤
+        # 可选：按任务ID过滤
+        if req.task_id:
+            stmt = stmt.where(TaskLog.task_id == req.task_id)
+
+        # 可选：按状态过滤
         if req.status:
             stmt = stmt.where(TaskLog.status == req.status)
 
@@ -32,6 +35,16 @@ class CRUDTaskLog:
         items = db.execute(stmt.offset(offset).limit(req.size)).scalars().all()
 
         return total, items
+
+    def get_detail(self, db: Session, log_id: str = None, task_id: str = None):
+        """ 获取单条日志详情（含 detail_json）, 支持 log_id 或 task_id 查询 """
+        if log_id:
+            return db.execute(select(TaskLog).where(TaskLog.id == log_id)).scalar_one_or_none()
+        if task_id:
+            return db.execute(
+                select(TaskLog).where(TaskLog.task_id == task_id).order_by(TaskLog.start_time.desc()).limit(1)
+            ).scalar_one_or_none()
+        return None
 
 
 # 实例化全局单例
