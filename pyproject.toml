@@ -27,4 +27,7 @@ dependencies = [
     "pymupdf>=1.27.2.3",
     "pymupdf4llm>=1.27.2.3",
     "pyinstaller>=6.20.0",
+    "pymongo>=4.17.0",
+    "motor>=3.7.1",
+    "python-dateutil>=2.9.0.post0",
 ]
