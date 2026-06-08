@@ -17,7 +17,7 @@ class EngineFactory:
         db_type = req.db_type.lower()
         if db_type == "mongodb":
             return MongoSyncEngine(req)
-        elif db_type in ("mysql", "postgresql"):
+        elif db_type in ("mysql", "postgresql", "dm"):
             return DatabaseSyncEngine(req)
         else:
             raise ValueError(f"不支持的数据库类型: {req.db_type}")
