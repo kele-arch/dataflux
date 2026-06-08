@@ -38,6 +38,7 @@ class CollectTask(Base, BaseModelMixin):
     remark: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="备注")
 
     sync_tables: Mapped[list | None] = mapped_column(JSON, nullable=True, comment="指定同步表")
+    table_mapping: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="表名映射: {'源表名':'目标表名'}")
 
     # 采集模式：full(全量), inc_id(自增列), inc_time(时间戳), custom_sql(自定义SQL)
     collect_mode: Mapped[str] = mapped_column(String(20), default="full")
