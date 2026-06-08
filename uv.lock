@@ -258,6 +258,8 @@ dependencies = [
     { name = "apscheduler" },
     { name = "arq" },
     { name = "confluent-kafka" },
+    { name = "dmpython" },
+    { name = "dmsqlalchemy" },
     { name = "fastapi" },
     { name = "loguru" },
     { name = "motor" },
@@ -287,6 +289,8 @@ requires-dist = [
     { name = "apscheduler", specifier = ">=3.11.2" },
     { name = "arq", specifier = ">=0.25.0" },
     { name = "confluent-kafka", specifier = ">=2.14.2" },
+    { name = "dmpython", specifier = ">=2.5.32" },
+    { name = "dmsqlalchemy", specifier = ">=2.0.12" },
     { name = "fastapi", specifier = ">=0.103.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "motor", specifier = ">=3.7.1" },
@@ -308,6 +312,33 @@ requires-dist = [
     { name = "redis", specifier = "==7.2.1" },
     { name = "sqlalchemy", specifier = ">=2.0.18" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.23.0" },
+]
+
+[[package]]
+name = "dmpython"
+version = "2.5.32"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/06/a5/82cf0dfd483ef78e7523781ea95892ac921202a355cf158ce1ce72a956ab/dmpython-2.5.32-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:2fbc9602106ec8d894f10d93205d41b4dcfdbc3f67c4d7b5e45452bceea9f7bc", size = 11574161, upload-time = "2026-04-13T09:34:22.702Z" },
+    { url = "https://files.pythonhosted.org/packages/21/2c/d9f0f6c39834d73e89ff7e79aa92e677f4e4bea9c07dda917e2e3ad933bd/dmpython-2.5.32-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:bca8530ee0602c8bb4609a3b502cee01025642dbe873acdecc1f249318180ba9", size = 10881618, upload-time = "2026-04-13T09:04:20.903Z" },
+    { url = "https://files.pythonhosted.org/packages/d2/7b/9a1997e4db3e32c38a332229b5961f1b5f4bec406c959bf8cbc1fab4992f/dmpython-2.5.32-cp312-cp312-manylinux_2_12_x86_64.manylinux2010_x86_64.whl", hash = "sha256:cdeb42cb6f88b46c35dcf9d295c3c8ffe48a8b6f5713dee3fcc3e8cdd7b572ab", size = 10883883, upload-time = "2026-04-13T09:04:48.267Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/61/fee9c3f631dec012034b5a1ef1ee624b0a44740186d2efa23861db252f80/dmpython-2.5.32-cp312-cp312-win_amd64.whl", hash = "sha256:668da85d874aba561b6c0d6dde183ec294411967d64d671e69e41fb6d5523c39", size = 8670510, upload-time = "2026-04-13T09:25:54.738Z" },
+    { url = "https://files.pythonhosted.org/packages/35/c2/389b89c94a75323034bfd5ec345d699e8c30599f75b030a6f4d67b0460b2/dmpython-2.5.32-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:0a2b902e3d23dd1cd70e29a751adffe04ada5f0001dfb51f876a0367bf0eb125", size = 11573666, upload-time = "2026-04-13T09:34:59.585Z" },
+    { url = "https://files.pythonhosted.org/packages/e3/84/39cc41871d6ef72c2c3ee958e085916dc30bc7662b34bb09e57d5a2c2f59/dmpython-2.5.32-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:84c47b410d035d9432e9732c8f885435e8b04bb66b0ec7f8f86b4779f69aadbb", size = 10876679, upload-time = "2026-04-13T09:05:19.211Z" },
+    { url = "https://files.pythonhosted.org/packages/88/93/9b53fc5903f019692a35c78f5b0f4878a6aa74fdf1d117986051821436d9/dmpython-2.5.32-cp313-cp313-manylinux_2_12_x86_64.manylinux2010_x86_64.whl", hash = "sha256:719d250e79691d5448b27e05d63cb2f39e4c32c6f7c990f01807b20263b9c13a", size = 10875186, upload-time = "2026-04-13T09:05:46.581Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/ec/4f97d6a5fad7aba22e35f3f4ec078d2d85811239a22dd93f7e32bda15873/dmpython-2.5.32-cp313-cp313-win_amd64.whl", hash = "sha256:50c3c911be37af2a6cb05dc6e39ada6ef4d51a63f96a7ac9c8e877c929bbb34a", size = 8670506, upload-time = "2026-04-13T09:26:18.223Z" },
+]
+
+[[package]]
+name = "dmsqlalchemy"
+version = "2.0.12"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "dmpython" },
+    { name = "sqlalchemy" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e2/aa/b5154b3d0555c9bde5cd1b494514793bc2755df327b03e050232e02b6f59/dmsqlalchemy-2.0.12-py3-none-any.whl", hash = "sha256:e20a9fa4120e681c9ff660ae8abdcd51ecb6e86fab6837924a5e86a8a94fdbb3", size = 59252, upload-time = "2026-04-27T06:32:58.27Z" },
 ]
 
 [[package]]

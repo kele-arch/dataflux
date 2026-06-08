@@ -30,4 +30,6 @@ dependencies = [
     "pymongo>=4.17.0",
     "motor>=3.7.1",
     "python-dateutil>=2.9.0.post0",
+    "dmpython>=2.5.32",
+    "dmsqlalchemy>=2.0.12",
 ]
