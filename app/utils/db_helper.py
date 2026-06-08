@@ -23,7 +23,8 @@ def build_db_url(source_data) -> str:
     driver_map = {
         "mysql": "mysql+pymysql",
         "postgresql": "postgresql+psycopg2",
-        "oracle": "oracle+cx_oracle"
+        "oracle": "oracle+cx_oracle",
+        "dm": "dm+dmPython"
     }
 
     driver = driver_map.get(db_type)
@@ -33,14 +34,24 @@ def build_db_url(source_data) -> str:
     config = getattr(source_data, "config_json", {}) or {}
     charset = config.get("charset", "utf8mb4")
 
-    url = URL.create(
-        drivername=driver,
-        username=username,
-        password=password,
-        host=source_data.host,
-        port=source_data.port,
-        database=source_data.db_name
-    )
+    # 达梦不需要 database 参数, 用 username 作为 schema
+    if db_type == "dm":
+        url = URL.create(
+            drivername=driver,
+            username=username,
+            password=password,
+            host=source_data.host,
+            port=source_data.port,
+        )
+    else:
+        url = URL.create(
+            drivername=driver,
+            username=username,
+            password=password,
+            host=source_data.host,
+            port=source_data.port,
+            database=source_data.db_name
+        )
 
     # 只有 MySQL 需要附加 charset 参数
     if db_type == "mysql":
