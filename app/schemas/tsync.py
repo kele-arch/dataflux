@@ -6,14 +6,26 @@
 # Copyright (c) 2026 by 胡H, All Rights Reserved.
 # @desc:
 from datetime import datetime
+from urllib.parse import urlparse
 
 from pydantic import Field, BaseModel, ConfigDict
 from typing import Optional, Literal, List
+
+from app.core.config import settings
 from app.schemas.base import BaseDecryptReq
+
+_parsed_mongo = urlparse(settings.MONGO_URL)
+
+# 即使没有密码或账号，urlparse 也会安全地解析为 None
+_default_host = _parsed_mongo.hostname or "127.0.0.1"
+_default_port = _parsed_mongo.port or 27017
+_default_user = _parsed_mongo.username
+_default_pass = _parsed_mongo.password
+_default_db = settings.MONGO_DB_NAME
 
 
 class DBSyncReq(BaseDecryptReq):
-    """ 接收前端传来的源数据库表单信息 """
+    """ 接收源数据库表单信息 """
     # 对外接口无影响，仅供后台 Worker 和 Engine 流转使用
     task_id: Optional[str] = Field(default=None, description="任务唯一标识(内部流转专用)")
 
@@ -53,6 +65,20 @@ class DBSyncReq(BaseDecryptReq):
         description="自定义提取SQL语句"
     )
 
+    # 目标库类型,默认写 PG(postgresql / mongodb)
+    target_type: str = Field(default="postgresql", description="目标库类型: postgresql 或 mongodb")
+    # 目标库为 MongoDB 时的连接信息(目前先读取配置写死本机)
+    target_host: Optional[str] = Field(default=_default_host, description="目标库主机")
+    target_port: Optional[int] = Field(default=_default_port, description="目标库端口")
+    target_username: Optional[str] = Field(default=_default_user, description="目标库账号")
+    target_password: Optional[str] = Field(default=_default_pass, description="目标库密码")
+    target_db_name: Optional[str] = Field(default=_default_db, description="目标库名")
+    # target_host: Optional[str] = None
+    # target_port: Optional[int] = 27017
+    # target_username: Optional[str] = None
+    # target_password: Optional[str] = None
+    # target_db_name: Optional[str] = None
+
 
 # region ---- 任务管理 ----
 class TaskCreateReq(BaseDecryptReq):
@@ -73,6 +99,14 @@ class TaskCreateReq(BaseDecryptReq):
     custom_sql: Optional[str] = Field(default=None)
     remark: Optional[str] = Field(default=None, description="备注")
     sync_tables: Optional[List[str]] = Field(default=None, description="指定同步的表名列表")
+
+    # 目标库配置 (MongoDB → MongoDB 时需要)
+    target_type: str = Field(default="postgresql", description="目标库类型: postgresql 或 mongodb")
+    target_host: Optional[str] = Field(default=None, description="目标库主机")
+    target_port: Optional[int] = Field(default=None, description="目标库端口")
+    target_username: Optional[str] = Field(default=None, description="目标库账号")
+    target_password: Optional[str] = Field(default=None, description="目标库密码")
+    target_db_name: Optional[str] = Field(default=None, description="目标库名")
 
 
 class TaskUpdateReq(TaskCreateReq):
@@ -113,6 +147,10 @@ class TaskOut(BaseModel):
     sync_tables: Optional[List[str]]
     schedule_type: Optional[str]
     schedule_value: Optional[str]
+    target_type: Optional[str] = "postgresql"
+    target_host: Optional[str] = None
+    target_port: Optional[int] = None
+    target_db_name: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
