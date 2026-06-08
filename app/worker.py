@@ -85,7 +85,7 @@ async def run_sync_job(ctx, task_id: str):
             custom_sql=task.custom_sql,
             target_type=task.target_type or "postgresql",
             target_host=(task.target_host or source.host) if task.target_type == "mongodb" else None,
-            target_port=(task.target_port or source.port) if task.target_type == "mongodb" else None,
+            target_port=(task.target_port or 27017) if task.target_type == "mongodb" else None,
             target_username=(task.target_username or source.username) if task.target_type == "mongodb" else None,
             target_password=(task.target_password or source.password) if task.target_type == "mongodb" else None,
             target_db_name=(task.target_db_name or settings.MONGO_DB_NAME) if task.target_type == "mongodb" else None
