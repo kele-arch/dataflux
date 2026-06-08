@@ -8,6 +8,7 @@
 
 from .mysql import MySQLHandler
 from .postgres import PostgreSQLHandler
+from .dm import DMHandler
 
 
 def get_dialect_handler(db_type: str):
@@ -17,5 +18,7 @@ def get_dialect_handler(db_type: str):
         return MySQLHandler()
     elif db_type == "postgresql":
         return PostgreSQLHandler()
+    elif db_type == "dm":
+        return DMHandler()
     else:
         raise ValueError(f"暂不支持的方言清洗器: {db_type}")
