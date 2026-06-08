@@ -23,6 +23,7 @@ from app.services.task_control import get_task_status, save_watermark, TASK_PAUS
 from app.exceptions import TaskPausedException, TaskCancelledException
 from app.core.config import settings
 
+
 class DatabaseSyncEngine:
     """ 异构数据库同步引擎核心类
     负责管理数据库连接、表结构反射清洗、以及流式数据合并
@@ -107,6 +108,11 @@ class DatabaseSyncEngine:
         logger.info(f"成功读取到 {len(table_names)} 张源表: {table_names}")
         return table_names
 
+    def _resolve_target_name(self, source_name: str) -> str:
+        """ 根据 table_mapping 将源表名映射为目标表名, 无映射则同名 """
+        mapping = self.req.table_mapping or {}
+        return mapping.get(source_name, source_name)
+
     def _prepare_target_schema(self):
         """ 步骤二: 类型归一化与约束清洗, 在目标库建表 """
 
@@ -131,8 +137,9 @@ class DatabaseSyncEngine:
 
                 clean_columns.append(new_col)
 
-            # 在目标 Metadata 中组装干净的表
-            Table(table_name, self.target_metadata, *clean_columns)
+            # 应用表名映射
+            target_name = self._resolve_target_name(table_name)
+            Table(target_name, self.target_metadata, *clean_columns)
 
         # 执行建表操作 (如果存在则忽略)
         self.target_metadata.create_all(bind=self.target_engine)
@@ -193,10 +200,11 @@ class DatabaseSyncEngine:
 
                 self._check_task_status(global_max_watermark)  # 每张表开始前探测
 
-                logger.info(f"->正在同步表: [{table_name}] ...")
+                target_name = self._resolve_target_name(table_name)
+                logger.info(f"->正在同步表: [{table_name}] -> [{target_name}] ...")
                 start_time = time.time()
 
-                target_table = self.target_metadata.tables[table_name]
+                target_table = self.target_metadata.tables[target_name]
                 pk_cols = [c.name for c in target_table.primary_key.columns]
 
                 # 调用查询生成器, 替代之前的硬编码 select()
@@ -247,6 +255,7 @@ class DatabaseSyncEngine:
                 # 收集单表执行明细
                 table_details.append({
                     "name": table_name,
+                    "target_name": target_name,
                     "records": inserted_count,
                     "cost_seconds": elapsed,
                     "high_watermark": str(current_max_watermark) if current_max_watermark else None
