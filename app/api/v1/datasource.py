@@ -38,7 +38,11 @@ def test_db_connection(req: DataSourceBase):
 
         url = build_db_url(req)
 
-        engine = create_engine(url, connect_args={"connect_timeout": 3})
+        # dmPython 不支持 connect_args 超时参数, 不传
+        if req.type.lower() == "dm":
+            engine = create_engine(url)
+        else:
+            engine = create_engine(url, connect_args={"connect_timeout": 3})
         try:
             with engine.connect():
                 pass
@@ -99,7 +103,8 @@ def get_datasource_tables(req: DataSourceIdReq, db: Session = Depends(get_db)):
             return BaseResponse(data=collections, msg="获取成功")
 
         url = build_db_url(source)
-        engine = create_engine(url, connect_args={"connect_timeout": 3})
+        engine = create_engine(url) if source.type.lower() == "dm" else create_engine(url, connect_args={
+            "connect_timeout": 3})
         try:
             inspector = inspect(engine)
             return BaseResponse(data=inspector.get_table_names(), msg="获取成功")
@@ -125,7 +130,8 @@ def get_datasource_tables_detail(req: DataSourceIdReq, db: Session = Depends(get
             )
 
         url = build_db_url(source)
-        engine = create_engine(url, connect_args={"connect_timeout": 3})
+        engine = create_engine(url) if source.type.lower() == "dm" else create_engine(url, connect_args={
+            "connect_timeout": 3})
         try:
             inspector = inspect(engine)
             result = []
