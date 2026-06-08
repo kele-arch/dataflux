@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://127.0.0.1:6379/0"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 1天
 
+    MONGO_URL: str = "mongodb://localhost:27017"  # MongoDB 连接 URL
+    MONGO_DB_NAME: str = "dataflux"  # MongoDB 数据库名称
+
     ENABLE_DB_CHECK: bool = False  # 是否校验数据库连接
 
     ENABLE_ENCRYPT: bool = False  # 是否启用响应数据加密
@@ -32,6 +35,7 @@ class Settings(BaseSettings):
     ENABLE_TOKEN: bool = False  # 是否启动登陆验证
 
     BATCH_SIZE: int = 10  # 批处理大小,默认 10 (任务中每次处理的记录数,处理一批则暂停检测状态)
+    MONGO_BATCH_SIZE: int = 100  # MongoDB 批处理大小,默认 100 (MongoDB 连接相对较慢,适当增加批处理大小)
 
     TIMEZONE: str = "Asia/Shanghai"  # 默认时区,用于日志时间戳等显示
 
