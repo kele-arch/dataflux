@@ -111,6 +111,8 @@ class TaskOut(BaseModel):
     create_time: Optional[datetime]
     update_time: Optional[datetime]
     sync_tables: Optional[List[str]]
+    schedule_type: Optional[str]
+    schedule_value: Optional[str]
 
     model_config = ConfigDict(from_attributes=True)
 
