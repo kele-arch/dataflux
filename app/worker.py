@@ -77,17 +77,18 @@ async def run_sync_job(ctx, task_id: str):
             db_name=db_name,
             target_table=task.topic_or_table,
             sync_tables=task.sync_tables,
+            table_mapping=task.table_mapping,
             sync_mode=task.sync_mode,
             collect_mode=task.collect_mode,
             incremental_column=task.incremental_column,
             last_watermark=task.last_watermark,
             custom_sql=task.custom_sql,
             target_type=task.target_type or "postgresql",
-            target_host=task.target_host or source.host,
-            target_port=task.target_port or source.port,
-            target_username=task.target_username or source.username,
-            target_password=task.target_password or source.password,
-            target_db_name=task.target_db_name or settings.MONGO_DB_NAME
+            target_host=(task.target_host or source.host) if task.target_type == "mongodb" else None,
+            target_port=(task.target_port or source.port) if task.target_type == "mongodb" else None,
+            target_username=(task.target_username or source.username) if task.target_type == "mongodb" else None,
+            target_password=(task.target_password or source.password) if task.target_type == "mongodb" else None,
+            target_db_name=(task.target_db_name or settings.MONGO_DB_NAME) if task.target_type == "mongodb" else None
         )
 
         # 创建 TaskLog 记录运行状态
@@ -109,7 +110,7 @@ async def run_sync_job(ctx, task_id: str):
 
         # 获取真实运行状态
         job_status = result.get("status", "success")
-        
+
         # 如果被中断或取消, 立刻更新日志并安全退出
         if job_status in ["paused", "cancelled"]:
             task_log.status = job_status
@@ -145,7 +146,7 @@ async def run_sync_job(ctx, task_id: str):
                 log_id=task_log.id,
                 task_id=task.id,
                 source_table=detail.get("name", "unknown"),
-                target_table=detail.get("name", "unknown"),
+                target_table=detail.get("target_name", detail.get("name", "unknown")),
                 sync_mode=sync_req.sync_mode,
                 collect_mode=sync_req.collect_mode,
                 records_count=detail.get("records", 0),
