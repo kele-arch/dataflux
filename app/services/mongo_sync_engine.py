@@ -135,14 +135,19 @@ class MongoSyncEngine:
         logger.warning("增量条件不完整, 回退全量模式")
         return {}
 
+    def _resolve_target_name(self, source_name: str) -> str:
+        """ 根据 table_mapping 将源集合名映射为目标表名, 无映射则同名 """
+        mapping = self.req.table_mapping or {}
+        return mapping.get(source_name, source_name)
+
     def _prepare_target_table(self, collection_name: str) -> Table:
         """
-        在 PG 中为每个 Collection 准备一张固定结构的目标表: 
+        在 PG 中为每个 Collection 准备一张固定结构的目标表:
             _id     TEXT PRIMARY KEY
             raw_doc JSON
         如果表已存在则跳过
         """
-        target_table_name = collection_name  # 集合名直接作为目标表名
+        target_table_name = self._resolve_target_name(collection_name)
 
         metadata = MetaData()
         table = Table(
@@ -233,10 +238,13 @@ class MongoSyncEngine:
                 inserted_count += len(batch_data)
 
         elapsed = time.time() - start_time
-        logger.info(f"Collection [{collection_name}] 完成, 迁移 {inserted_count} 条, 耗时 {elapsed:.2f}s")
+        target_name = self._resolve_target_name(collection_name)
+        logger.info(
+            f"Collection [{collection_name}] -> [{target_name}] 完成, 迁移 {inserted_count} 条, 耗时 {elapsed:.2f}s")
 
         return {
             "name": collection_name,
+            "target_name": target_name,
             "records": inserted_count,
             "high_watermark": str(current_max_watermark) if current_max_watermark else None
         }
@@ -279,13 +287,14 @@ class MongoSyncEngine:
     def _migrate_collection_to_mongo(self, collection_name: str, target_client: MongoClient) -> dict:
         """
         迁移单个 Collection -> 目标 MongoDB
-        策略 B: 原始文档直接写入, 不做任何结构改变
+        策略: 原始文档直接写入, 不做任何结构改变
         """
-        logger.info(f"开始迁移 Collection [{collection_name}] -> 目标 MongoDB")
+        target_name = self._resolve_target_name(collection_name)
+        logger.info(f"开始迁移 Collection [{collection_name}] -> [{target_name}] (目标 MongoDB)")
         start_time = time.time()
 
         source_col = self._get_client()[self.req.db_name][collection_name]
-        target_col = target_client[self.req.target_db_name][collection_name]
+        target_col = target_client[self.req.target_db_name][target_name]
 
         query_filter = self._build_query_filter()
         cursor = source_col.find(query_filter).sort("_id", ASCENDING).batch_size(self.batch_size)
@@ -319,10 +328,12 @@ class MongoSyncEngine:
             inserted_count += len(batch_data)
 
         elapsed = time.time() - start_time
-        logger.info(f"Collection [{collection_name}] 完成, 迁移 {inserted_count} 条, 耗时 {elapsed:.2f}s")
+        logger.info(
+            f"Collection [{collection_name}] -> [{target_name}] 完成, 迁移 {inserted_count} 条, 耗时 {elapsed:.2f}s")
 
         return {
             "name": collection_name,
+            "target_name": target_name,
             "records": inserted_count,
             "high_watermark": str(current_max_watermark) if current_max_watermark else None
         }
