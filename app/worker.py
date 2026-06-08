@@ -17,7 +17,7 @@ from app.db.session import SessionLocal
 from app.crud.crud_tsync import crud_task
 from app.models.dataSourceModel import DataSource
 from app.models.taskLogModel import TaskLog, SyncExecutionLog
-from app.services.sync_service import DatabaseSyncEngine
+from app.services.engine_factory import EngineFactory
 from app.core import logger
 from app.schemas.tsync import DBSyncReq
 
@@ -81,7 +81,13 @@ async def run_sync_job(ctx, task_id: str):
             collect_mode=task.collect_mode,
             incremental_column=task.incremental_column,
             last_watermark=task.last_watermark,
-            custom_sql=task.custom_sql
+            custom_sql=task.custom_sql,
+            target_type=task.target_type or "postgresql",
+            target_host=task.target_host or source.host,
+            target_port=task.target_port or source.port,
+            target_username=task.target_username or source.username,
+            target_password=task.target_password or source.password,
+            target_db_name=task.target_db_name or settings.MONGO_DB_NAME
         )
 
         # 创建 TaskLog 记录运行状态
@@ -96,7 +102,7 @@ async def run_sync_job(ctx, task_id: str):
 
         # 在线程池中执行同步
         def _execute():
-            engine = DatabaseSyncEngine(req=sync_req)  # 使用默认引擎
+            engine = EngineFactory.create(sync_req)  # 一行搞定路由
             return engine.main()
 
         result = await asyncio.to_thread(_execute)
