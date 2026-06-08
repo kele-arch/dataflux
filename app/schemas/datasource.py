@@ -6,13 +6,14 @@
 # Copyright (c) 2026 by 胡H, All Rights Reserved.
 # @desc:
 from pydantic import Field, BaseModel, ConfigDict
-from typing import Optional, List
+from typing import Optional, List, Literal
 from app.schemas.base import BaseDecryptReq
 
 
 class DataSourceBase(BaseDecryptReq):
     name: str = Field(..., description="数据源名称，如：产线A_MySQL")
-    type: str = Field(..., description="数据源类型：mysql, postgresql")
+    # type: str = Field(..., description="数据源类型：mysql, postgresql")
+    type: Literal["mysql", "postgresql", "oracle", "mongodb"] = Field(..., description="数据库类型")
     host: str = Field(..., description="主机地址")
     port: int = Field(..., description="端口")
     db_name: str = Field(..., description="数据库名")

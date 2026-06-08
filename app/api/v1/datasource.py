@@ -18,7 +18,7 @@ from app.schemas.datasource import (
     DataSourcePageQueryReq, DataSourceOut, DataSourceBase, DataSourcePageOut
 )
 from app.crud.crud_datasource import crud_datasource
-from app.utils.db_helper import build_db_url
+from app.utils.db_helper import build_db_url, get_mongo_collections, _get_mongo_collections_detail
 
 router = APIRouter(prefix="/datasource", tags=["数据源管理"])
 
@@ -26,6 +26,16 @@ router = APIRouter(prefix="/datasource", tags=["数据源管理"])
 @router.post("/test_connect", summary="测试数据库连接", response_model=BaseResponse)
 def test_db_connection(req: DataSourceBase):
     try:
+        if req.type.lower() == "mongodb":
+            get_mongo_collections(
+                host=req.host,
+                port=req.port,
+                db_name=req.db_name,
+                username=req.username,
+                password=req.password
+            )
+            return BaseResponse(msg="连接成功！MongoDB 通信正常")
+
         url = build_db_url(req)
 
         engine = create_engine(url, connect_args={"connect_timeout": 3})
@@ -78,6 +88,16 @@ def get_datasource_tables(req: DataSourceIdReq, db: Session = Depends(get_db)):
         return BaseResponse(code=0, msg="数据源不存在")
 
     try:
+        if source.type.lower() == "mongodb":
+            collections = get_mongo_collections(
+                host=source.host,
+                port=source.port,
+                db_name=source.db_name,
+                username=source.username,
+                password=source.password
+            )
+            return BaseResponse(data=collections, msg="获取成功")
+
         url = build_db_url(source)
         engine = create_engine(url, connect_args={"connect_timeout": 3})
         try:
@@ -89,7 +109,8 @@ def get_datasource_tables(req: DataSourceIdReq, db: Session = Depends(get_db)):
         return BaseResponse(code=0, msg=f"连接失败: {str(e)}")
 
 
-@router.post("/tables/detail", summary="获取表结构详情(含表注释和字段注释)", response_model=BaseResponse[List[Dict[str, Any]]])
+@router.post("/tables/detail", summary="获取表结构详情(含表注释和字段注释)",
+             response_model=BaseResponse[List[Dict[str, Any]]])
 def get_datasource_tables_detail(req: DataSourceIdReq, db: Session = Depends(get_db)):
     """返回每张表的表名、表注释、字段名、字段类型、字段注释"""
     source = crud_datasource.get_by_id(db, req.source_id)
@@ -97,6 +118,12 @@ def get_datasource_tables_detail(req: DataSourceIdReq, db: Session = Depends(get
         return BaseResponse(code=0, msg="数据源不存在")
 
     try:
+        if source.type.lower() == "mongodb":
+            return BaseResponse(
+                data=_get_mongo_collections_detail(source),
+                msg="获取成功"
+            )
+
         url = build_db_url(source)
         engine = create_engine(url, connect_args={"connect_timeout": 3})
         try:
