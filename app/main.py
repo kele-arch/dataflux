@@ -6,12 +6,14 @@
 # Copyright (c) 2025 by 胡H, All Rights Reserved.
 # @desc: man!!!
 
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI
 from sqlalchemy import text
 
 from app.api.v1 import api_router
+from app.core.mongo import init_mongo, close_mongo
 from app.core.redis import close_redis, init_redis
 from app.db.session import init_db, engine
 from app.core.config import settings
@@ -54,6 +56,15 @@ async def lifespan(app: FastAPI):
             raise  # 终止启动
         else:
             logger.warning(f"Redis 连接失败, 已忽略. 错误: {e}")
+
+    try:
+        await init_mongo()
+    except Exception as e:
+        if settings.ENABLE_DB_CHECK:
+            raise  # 终止启动
+        else:
+            logger.warning("MongoDB 连接失败, 已忽略启动中断.")
+
     # 队列 Redis 池 (专门负责下发 ARQ 任务)
     try:
         await init_arq_pool()
@@ -83,6 +94,11 @@ async def lifespan(app: FastAPI):
     # 关闭两个 Redis 连接池
     await close_arq_pool()
     await close_redis()
+
+    try:
+        await asyncio.wait_for(close_mongo(), timeout=5.0)
+    except asyncio.TimeoutError:
+        logger.warning("MongoDB 关闭超时, 强制跳过")
 
     logger.info('程序执行结束')
 
