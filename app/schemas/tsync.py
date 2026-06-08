@@ -40,6 +40,7 @@ class DBSyncReq(BaseDecryptReq):
     charset: Optional[str] = Field("utf8mb4", description="字符集")
     target_table: Optional[str] = Field(default=None, description="指定表名，不填则整库同步")
     sync_tables: Optional[List[str]] = Field(default=None, description="指定同步的表名列表，为空则全库同步")
+    table_mapping: Optional[dict] = Field(default=None, description="表名映射: {'源表名':'目标表名'}，不传则同名")
 
     # 核心同步策略
     sync_mode: Literal["insert", "overwrite", "skip"] = Field(
@@ -99,6 +100,7 @@ class TaskCreateReq(BaseDecryptReq):
     custom_sql: Optional[str] = Field(default=None)
     remark: Optional[str] = Field(default=None, description="备注")
     sync_tables: Optional[List[str]] = Field(default=None, description="指定同步的表名列表")
+    table_mapping: Optional[dict] = Field(default=None, description="表名映射: {'源表名':'目标表名'}，不传则同名")
 
     # 目标库配置 (MongoDB → MongoDB 时需要)
     target_type: str = Field(default="postgresql", description="目标库类型: postgresql 或 mongodb")
@@ -145,6 +147,7 @@ class TaskOut(BaseModel):
     create_time: Optional[datetime]
     update_time: Optional[datetime]
     sync_tables: Optional[List[str]]
+    table_mapping: Optional[dict] = None
     schedule_type: Optional[str]
     schedule_value: Optional[str]
     target_type: Optional[str] = "postgresql"
