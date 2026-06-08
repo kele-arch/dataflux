@@ -51,5 +51,13 @@ class CollectTask(Base, BaseModelMixin):
     # 用户自定义的 SQL 语句
     custom_sql: Mapped[str | None] = mapped_column(Text)
 
+    # 目标库配置 (MongoDB -> MongoDB 时需要)
+    target_type: Mapped[str] = mapped_column(String(20), default="postgresql", comment="目标库类型: postgresql 或 mongodb")
+    target_host: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="目标库主机")
+    target_port: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="目标库端口")
+    target_username: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="目标库账号")
+    target_password: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="目标库密码")
+    target_db_name: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="目标库名")
+
     def __repr__(self) -> str:
         return f"<CollectTask(task_name={self.task_name}, status={self.status})>"
