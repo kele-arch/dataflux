@@ -55,6 +55,8 @@ class DatabaseSyncEngine:
             return f"mysql+pymysql://{self.req.username}:{safe_password}@{self.req.host}:{self.req.port}/{self.req.db_name}?charset={self.req.charset}"
         elif db_type == "postgresql":
             return f"postgresql+psycopg2://{self.req.username}:{safe_password}@{self.req.host}:{self.req.port}/{self.req.db_name}"
+        elif db_type == "dm":
+            return f"dm+dmPython://{self.req.username}:{safe_password}@{self.req.host}:{self.req.port}"
         else:
             raise ValueError(f"暂不支持的数据库类型: {self.req.db_type}")
 
@@ -96,13 +98,41 @@ class DatabaseSyncEngine:
 
         logger.info("正在反射源数据库表结构...")
 
+        # 达梦专属: 反射时必须指定 schema = username.toUpperCase()
+        reflect_kwargs = {"bind": self.source_engine}
+        if self.req.db_type.lower() == "dm":
+            reflect_kwargs["schema"] = self.req.username.upper()
+
         # sync_tables 指定了就只反射这些表, 否则整库反射
         if self.req.sync_tables:
-            logger.info(f"采用 [指定多表] 模式, 目标: {self.req.sync_tables}")
-            self.source_metadata.reflect(bind=self.source_engine, only=self.req.sync_tables)
+            if self.req.db_type.lower() == "dm":
+                # 达梦适配: 用 inspect 查出物理表名, 做大小写不敏感匹配
+                from sqlalchemy import inspect as sa_inspect
+                inspector = sa_inspect(self.source_engine)
+                actual_tables = inspector.get_table_names(schema=self.req.username.upper())
+                # 构建 {小写名: 物理名} 映射
+                table_map = {t.lower(): t for t in actual_tables}
+                # 用物理名反射
+                only_tables = []
+                for t in self.req.sync_tables:
+                    physical = table_map.get(t.lower())
+                    if physical:
+                        only_tables.append(physical)
+                    else:
+                        logger.warning(f"源库中不存在表: {t}, 已跳过")
+                if not only_tables:
+                    logger.error("所有指定的表在源库中都不存在")
+                    return []
+                logger.info(f"采用 [指定多表] 模式, 物理表名: {only_tables}")
+            else:
+                only_tables = self.req.sync_tables
+                logger.info(f"采用 [指定多表] 模式, 目标: {only_tables}")
+
+            reflect_kwargs["only"] = only_tables
+            self.source_metadata.reflect(**reflect_kwargs)
         else:
             logger.info("采用 [整库反射] 模式")
-            self.source_metadata.reflect(bind=self.source_engine)
+            self.source_metadata.reflect(**reflect_kwargs)
 
         table_names = list(self.source_metadata.tables.keys())
         logger.info(f"成功读取到 {len(table_names)} 张源表: {table_names}")
@@ -111,7 +141,16 @@ class DatabaseSyncEngine:
     def _resolve_target_name(self, source_name: str) -> str:
         """ 根据 table_mapping 将源表名映射为目标表名, 无映射则同名 """
         mapping = self.req.table_mapping or {}
-        return mapping.get(source_name, source_name)
+        # 先精确匹配
+        if source_name in mapping:
+            return mapping[source_name]
+        # 达梦适配: 大小写不敏感匹配 (用户可能传 DEVICE, 实际是 device)
+        if self.req.db_type.lower() == "dm":
+            lower_name = source_name.lower()
+            for k, v in mapping.items():
+                if k.lower() == lower_name:
+                    return v
+        return source_name
 
     def _prepare_target_schema(self):
         """ 步骤二: 类型归一化与约束清洗, 在目标库建表 """
@@ -125,20 +164,30 @@ class DatabaseSyncEngine:
             return
 
         logger.info("正在进行列类型归一化, 并彻底剥离源端约束...")
+        from sqlalchemy import Column as SAColumn
 
         for table_name, source_table in self.source_metadata.tables.items():
             clean_columns = []
             for c in source_table.columns:
-                new_col = c.copy()
+                # 调用方言处理器进行类型翻译
+                col_type = self.dialect_handler.normalize_type(c.type)
 
-                # 调用方言处理器进行类型翻译和挂件清理
-                new_col.type = self.dialect_handler.normalize_type(new_col.type)
-                new_col = self.dialect_handler.clean_column(new_col)
+                # 彻底清理排序规则 (DM/MySQL 源库可能带 utf8mb3_general_ci 等 PG 不认识的 collation)
+                if hasattr(col_type, 'collation'):
+                    col_type.collation = None
+
+                # 达梦适配: 列名转小写 (达梦默认大写, PG 默认小写)
+                col_name = c.name.lower() if self.req.db_type.lower() == "dm" else c.name
+
+                # 创建全新的 Column (避免 Column.copy() 浅拷贝污染源表元数据)
+                new_col = SAColumn(col_name, col_type, nullable=True)
 
                 clean_columns.append(new_col)
 
+            # 达梦反射出的表名格式为 'SCHEMA.TABLE_NAME', 需要清洗为纯表名
+            pure_name = table_name.split('.')[-1] if '.' in table_name else table_name
             # 应用表名映射
-            target_name = self._resolve_target_name(table_name)
+            target_name = self._resolve_target_name(pure_name)
             Table(target_name, self.target_metadata, *clean_columns)
 
         # 执行建表操作 (如果存在则忽略)
@@ -200,7 +249,9 @@ class DatabaseSyncEngine:
 
                 self._check_task_status(global_max_watermark)  # 每张表开始前探测
 
-                target_name = self._resolve_target_name(table_name)
+                # 达梦反射出的表名格式为 'SCHEMA.TABLE_NAME', 清洗为纯表名
+                pure_name = table_name.split('.')[-1] if '.' in table_name else table_name
+                target_name = self._resolve_target_name(pure_name)
                 logger.info(f"->正在同步表: [{table_name}] -> [{target_name}] ...")
                 start_time = time.time()
 
@@ -229,9 +280,10 @@ class DatabaseSyncEngine:
 
                     # 如果是增量模式, 找出这批数据中的最大值
                     if self.req.collect_mode in ["inc_id", "inc_time"] and self.req.incremental_column:
-                        val = row_dict.get(self.req.incremental_column)
+                        # 达梦适配: 行数据中的 key 是大写, 需要转换
+                        wm_col = self.req.incremental_column.upper() if self.req.db_type.lower() == "dm" else self.req.incremental_column
+                        val = row_dict.get(wm_col)
                         if val is not None:
-                            # 简单的最大值打擂台比对
                             if current_max_watermark is None or val > current_max_watermark:
                                 current_max_watermark = val
 
@@ -282,18 +334,21 @@ class DatabaseSyncEngine:
             logger.info("采用 [全量] 模式进行提取")
             return base_query
 
+        # 达梦适配: 列名强转大写 (达梦默认大写存储)
+        col_name = task_config.incremental_column
+        if task_config.db_type.lower() == "dm" and col_name:
+            col_name = col_name.upper()
+
         # 2. 增量 - 自增列模式
-        if mode == "inc_id" and task_config.incremental_column and task_config.last_watermark:
+        if mode == "inc_id" and col_name and task_config.last_watermark:
             logger.info(f"采用 [自增列] 增量提取, 水位线: {task_config.last_watermark}")
-            inc_col = getattr(source_table.c, task_config.incremental_column)
-            # WHERE id > last_watermark
+            inc_col = getattr(source_table.c, col_name)
             return base_query.where(inc_col > task_config.last_watermark)
 
         # 3. 增量 - 时间戳模式
-        if mode == "inc_time" and task_config.incremental_column and task_config.last_watermark:
+        if mode == "inc_time" and col_name and task_config.last_watermark:
             logger.info(f"采用 [时间戳] 增量提取, 水位线: {task_config.last_watermark}")
-            time_col = getattr(source_table.c, task_config.incremental_column)
-            # WHERE update_time > '2026-06-04 12:00:00'
+            time_col = getattr(source_table.c, col_name)
             return base_query.where(time_col > task_config.last_watermark)
 
         # 默认回退到全量
@@ -305,10 +360,15 @@ class DatabaseSyncEngine:
         解决跨库同步时的列缺失、NOT NULL 冲突和类型转换崩溃问题
         """
         cleaned = {}
+        is_dm = self.req.db_type.lower() == "dm"
 
         for col in target_table.columns:
             col_name = col.name
+            # 达梦适配: 源数据 key 是大写, 目标列名是小写, 需要双向匹配
+            # 不能用 or, 因为 0、""、False 会被当作 falsy 丢弃
             val = row_dict.get(col_name)
+            if val is None and is_dm:
+                val = row_dict.get(col_name.upper())
 
             # 源数据有值, 且不是 None, 直接保留
             if val is not None:
