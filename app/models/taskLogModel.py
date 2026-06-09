@@ -5,6 +5,7 @@
 # @LastModified: 
 # Copyright (c) 2026 by 胡H, All Rights Reserved.
 # @desc:
+from typing import Optional
 
 from sqlalchemy import String, Integer, Text, DateTime, JSON, Float
 from sqlalchemy.orm import Mapped, mapped_column
@@ -73,5 +74,26 @@ class SyncExecutionLog(Base, BaseModelMixin):
     # 状态
     status: Mapped[str] = mapped_column(String(20), default="success", comment="success/failed")
     error_msg: Mapped[str | None] = mapped_column(Text, nullable=True, comment="错误信息")
+
+
+# endregion
+
+
+# region ---- FTP采集记录表 ----
+class FtpFileRecord(BaseModelMixin, Base):
+    __tablename__ = "ftp_file_record"
+    __table_args__ = {"comment": "FTP 文件采集记录表"}
+
+    task_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True, comment="关联采集任务ID")
+    remote_path: Mapped[str] = mapped_column(String(500), nullable=False, comment="FTP远程文件路径")
+    local_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True, comment="本地存储绝对路径")
+    file_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="文件名")
+    file_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="文件大小(字节)")
+    md5: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, comment="文件MD5，用于增量去重")
+    file_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True,
+                                                     comment="文件类型: csv/json/yaml/binary")
+    is_parsed: Mapped[int] = mapped_column(Integer, default=0, comment="是否已解析入库(0未解析 1已解析)")
+    parsed_rows: Mapped[int] = mapped_column(Integer, default=0, comment="解析写入行数")
+    downloaded_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="下载时间")
 
 # endregion
