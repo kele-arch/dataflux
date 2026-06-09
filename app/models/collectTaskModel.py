@@ -60,5 +60,12 @@ class CollectTask(Base, BaseModelMixin):
     target_password: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="目标库密码")
     target_db_name: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="目标库名")
 
+    # FTP 采集配置
+    ftp_url: Mapped[str | None] = mapped_column(String(500), nullable=True, comment="FTP完整URL,传了则自动解析覆盖连接参数")
+    ftp_path: Mapped[str | None] = mapped_column(String(500), nullable=True, comment="FTP远程文件路径")
+    ftp_passive: Mapped[bool] = mapped_column(Integer, default=1, comment="是否被动模式(1是 0否)")
+    file_parse: Mapped[bool] = mapped_column(Integer, default=0, comment="是否解析文件入库(1是 0否)")
+    file_type: Mapped[str] = mapped_column(String(20), default="auto", comment="文件类型: auto/csv/json/yaml")
+
     def __repr__(self) -> str:
         return f"<CollectTask(task_name={self.task_name}, status={self.status})>"
