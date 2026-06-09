@@ -32,4 +32,5 @@ dependencies = [
     "python-dateutil>=2.9.0.post0",
     "dmpython>=2.5.32",
     "dmsqlalchemy>=2.0.12",
+    "pyyaml>=6.0.3",
 ]
