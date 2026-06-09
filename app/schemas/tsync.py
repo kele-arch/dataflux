@@ -29,7 +29,7 @@ class DBSyncReq(BaseDecryptReq):
     # 对外接口无影响，仅供后台 Worker 和 Engine 流转使用
     task_id: Optional[str] = Field(default=None, description="任务唯一标识(内部流转专用)")
 
-    db_type: Literal["mysql", "postgresql", "oracle", "mongodb", "dm"] = Field(..., description="数据库类型")
+    db_type: Literal["mysql", "postgresql", "oracle", "mongodb", "dm", "ftp"] = Field(..., description="数据库类型")
     host: str = Field(..., description="主机地址 IP")
     port: int = Field(..., description="端口")
     username: str = Field(..., description="用户名")
@@ -80,6 +80,17 @@ class DBSyncReq(BaseDecryptReq):
     # target_password: Optional[str] = None
     # target_db_name: Optional[str] = None
 
+    # FTP配置参数
+    ftp_url: Optional[str] = Field(default=None, description="FTP完整URL,如 ftp://admin:123456@127.0.0.1:21/data/file.yaml, 传了则自动解析覆盖host/port/username/password/ftp_path")
+    ftp_path: Optional[str] = Field(default=None, description="FTP远程文件路径,如 /data/calico.yaml")
+    ftp_passive: int = Field(default=1, description="是否使用FTP被动模式(1是 0否)")
+    local_save_dir: Optional[str] = Field(default=None, description="本地存储目录,不填则用配置默认目录")
+    file_parse: int = Field(default=0, description="是否解析结构化文件内容入库(1是 0否)")
+    file_type: Optional[Literal["csv", "json", "yaml", "auto"]] = Field(
+        default="auto",
+        description="文件类型，auto则根据扩展名自动判断"
+    )
+
 
 # region ---- 任务管理 ----
 class TaskCreateReq(BaseDecryptReq):
@@ -109,6 +120,13 @@ class TaskCreateReq(BaseDecryptReq):
     target_username: Optional[str] = Field(default=None, description="目标库账号")
     target_password: Optional[str] = Field(default=None, description="目标库密码")
     target_db_name: Optional[str] = Field(default=None, description="目标库名")
+
+    # FTP 采集配置
+    ftp_url: Optional[str] = Field(default=None, description="FTP完整URL,如 ftp://admin:123456@127.0.0.1:21/data/file.yaml, 传了自动解析覆盖连接参数")
+    ftp_path: Optional[str] = Field(default=None, description="FTP远程文件路径,如 /data/report.csv")
+    ftp_passive: int = Field(default=1, description="是否使用FTP被动模式(1是 0否)")
+    file_parse: int = Field(default=0, description="是否解析结构化文件内容入库(1是 0否)")
+    file_type: Optional[Literal["csv", "json", "yaml", "auto"]] = Field(default="auto", description="文件类型:auto自动识别")
 
 
 class TaskUpdateReq(TaskCreateReq):
@@ -154,6 +172,11 @@ class TaskOut(BaseModel):
     target_host: Optional[str] = None
     target_port: Optional[int] = None
     target_db_name: Optional[str] = None
+    ftp_url: Optional[str] = None
+    ftp_path: Optional[str] = None
+    ftp_passive: Optional[int] = 1
+    file_parse: Optional[int] = 0
+    file_type: Optional[str] = "auto"
 
     model_config = ConfigDict(from_attributes=True)
 
