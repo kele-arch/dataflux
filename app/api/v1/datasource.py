@@ -36,6 +36,24 @@ def test_db_connection(req: DataSourceBase):
             )
             return BaseResponse(msg="连接成功！MongoDB 通信正常")
 
+        if req.type.lower() == "ftp":
+            from ftplib import FTP, FTP_TLS, error_perm
+            ftp = FTP()
+            try:
+                ftp.connect(host=req.host, port=req.port or 21, timeout=5)
+                ftp.login(user=req.username or "anonymous", passwd=req.password or "")
+            except error_perm as e:
+                if "503" in str(e) or "AUTH" in str(e).upper():
+                    ftp.close()
+                    ftp = FTP_TLS()
+                    ftp.connect(host=req.host, port=req.port or 21, timeout=5)
+                    ftp.login(user=req.username or "anonymous", passwd=req.password or "")
+                    ftp.prot_p()
+                else:
+                    raise e
+            ftp.quit()
+            return BaseResponse(msg="连接成功！FTP(S) 通信正常")
+
         url = build_db_url(req)
 
         # dmPython 不支持 connect_args 超时参数, 不传
@@ -102,6 +120,9 @@ def get_datasource_tables(req: DataSourceIdReq, db: Session = Depends(get_db)):
             )
             return BaseResponse(data=collections, msg="获取成功")
 
+        if source.type.lower() == "ftp":
+            return BaseResponse(code=0, msg="FTP 数据源不支持表查询，请在任务中配置 ftp_path")
+
         url = build_db_url(source)
         engine = create_engine(url) if source.type.lower() == "dm" else create_engine(url, connect_args={
             "connect_timeout": 3})
@@ -128,6 +149,9 @@ def get_datasource_tables_detail(req: DataSourceIdReq, db: Session = Depends(get
                 data=_get_mongo_collections_detail(source),
                 msg="获取成功"
             )
+
+        if source.type.lower() == "ftp":
+            return BaseResponse(code=0, msg="FTP 数据源不支持表结构查询")
 
         url = build_db_url(source)
         engine = create_engine(url) if source.type.lower() == "dm" else create_engine(url, connect_args={
