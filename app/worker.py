@@ -88,7 +88,12 @@ async def run_sync_job(ctx, task_id: str):
             target_port=(task.target_port or 27017) if task.target_type == "mongodb" else None,
             target_username=(task.target_username or source.username) if task.target_type == "mongodb" else None,
             target_password=(task.target_password or source.password) if task.target_type == "mongodb" else None,
-            target_db_name=(task.target_db_name or settings.MONGO_DB_NAME) if task.target_type == "mongodb" else None
+            target_db_name=(task.target_db_name or settings.MONGO_DB_NAME) if task.target_type == "mongodb" else None,
+            ftp_url=task.ftp_url,
+            ftp_path=task.ftp_path,
+            ftp_passive=bool(task.ftp_passive),
+            file_parse=bool(task.file_parse),
+            file_type=task.file_type
         )
 
         # 创建 TaskLog 记录运行状态
