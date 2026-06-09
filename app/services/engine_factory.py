@@ -7,6 +7,7 @@
 # @desc: 数据库同步引擎工厂类,根据用户请求的数据库类型返回对应的同步引擎实例
 
 from app.schemas.tsync import DBSyncReq
+from app.services.ftp_sync_engine import FtpSyncEngine
 from app.services.sync_service import DatabaseSyncEngine
 from app.services.mongo_sync_engine import MongoSyncEngine
 
@@ -17,6 +18,8 @@ class EngineFactory:
         db_type = req.db_type.lower()
         if db_type == "mongodb":
             return MongoSyncEngine(req)
+        elif db_type == "ftp":
+            return FtpSyncEngine(req)
         elif db_type in ("mysql", "postgresql", "dm"):
             return DatabaseSyncEngine(req)
         else:
