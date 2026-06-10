@@ -17,11 +17,18 @@ class CRUDTaskLog:
     """ 任务日志查询 CRUD """
 
     def get_list(self, db: Session, req: LogPageQueryReq) -> tuple[int, list]:
-        stmt = select(TaskLog).order_by(TaskLog.start_time.desc())
+        # 动态排序
+        sort_col = getattr(TaskLog, req.sort_by or "start_time", TaskLog.start_time)
+        order = sort_col.desc() if req.sort_order == "desc" else sort_col.asc()
+        stmt = select(TaskLog).order_by(order)
 
         # 可选：按任务ID过滤
         if req.task_id:
             stmt = stmt.where(TaskLog.task_id == req.task_id)
+
+        # 可选：按任务名模糊搜索
+        if req.task_name:
+            stmt = stmt.where(TaskLog.task_name.like(f"%{req.task_name}%"))
 
         # 可选：按状态过滤
         if req.status:

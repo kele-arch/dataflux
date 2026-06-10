@@ -55,8 +55,11 @@ class CRUDCollectTask:
         return result.rowcount > 0
 
     def get_list(self, db: Session, req: TaskPageQueryReq) -> dict:
-        """ 分页与条件查询 """
-        stmt = select(CollectTask).order_by(CollectTask.id.desc())
+        """ 分页与条件查询 (支持排序) """
+        # 动态排序
+        sort_col = getattr(CollectTask, req.sort_by or "create_time", CollectTask.create_time)
+        order = sort_col.desc() if req.sort_order == "desc" else sort_col.asc()
+        stmt = select(CollectTask).order_by(order)
 
         # 动态条件过滤
         if req.task_name:

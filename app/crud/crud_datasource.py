@@ -39,7 +39,10 @@ class CRUDDataSource:
         return result.rowcount > 0
 
     def get_list(self, db: Session, req: DataSourcePageQueryReq) -> tuple[int, list]:
-        stmt = select(DataSource).order_by(DataSource.id.desc())
+        # 动态排序
+        sort_col = getattr(DataSource, req.sort_by or "create_time", DataSource.create_time)
+        order = sort_col.desc() if req.sort_order == "desc" else sort_col.asc()
+        stmt = select(DataSource).order_by(order)
         if req.name:
             stmt = stmt.where(DataSource.name.like(f"%{req.name}%"))
         if req.type:

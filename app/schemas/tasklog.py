@@ -7,7 +7,7 @@
 # @desc:
 
 from pydantic import Field, BaseModel, ConfigDict
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 from app.schemas.base import BaseDecryptReq
 
@@ -16,7 +16,10 @@ class LogPageQueryReq(BaseDecryptReq):
     page: int = Field(default=1, ge=1)
     size: int = Field(default=10, ge=1)
     task_id: Optional[str] = Field(default=None, description="按任务ID过滤,不传则查全量")
+    task_name: Optional[str] = Field(default=None, description="按任务名模糊搜索")
     status: Optional[str] = Field(default=None, description="状态过滤: running, success, failed")
+    sort_by: Optional[Literal["start_time", "end_time", "task_name"]] = Field(default="start_time", description="排序字段")
+    sort_order: Optional[Literal["asc", "desc"]] = Field(default="desc", description="排序方向")
 
 
 class TaskLogOut(BaseModel):

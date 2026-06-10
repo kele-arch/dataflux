@@ -39,6 +39,8 @@ class DataSourcePageQueryReq(BaseDecryptReq):
     size: int = Field(default=10, ge=1)
     name: Optional[str] = Field(default=None, description="按名称模糊搜索")
     type: Optional[str] = Field(default=None, description="按类型过滤")
+    sort_by: Optional[Literal["create_time", "name"]] = Field(default="create_time", description="排序字段")
+    sort_order: Optional[Literal["asc", "desc"]] = Field(default="desc", description="排序方向")
 
 
 # 响应序列化模型

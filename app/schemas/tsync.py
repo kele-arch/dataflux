@@ -147,8 +147,10 @@ class TaskStatusReq(BaseDecryptReq):
 class TaskPageQueryReq(BaseDecryptReq):
     page: int = Field(default=1, ge=1)
     size: int = Field(default=10, ge=1)
-    task_name: Optional[str] = Field(default=None)
-    collect_mode: Optional[str] = Field(default=None)
+    task_name: Optional[str] = Field(default=None, description="按任务名模糊搜索")
+    collect_mode: Optional[str] = Field(default=None, description="按采集模式过滤")
+    sort_by: Optional[Literal["create_time", "update_time", "task_name"]] = Field(default="create_time", description="排序字段")
+    sort_order: Optional[Literal["asc", "desc"]] = Field(default="desc", description="排序方向")
 
 
 class TaskOut(BaseModel):
