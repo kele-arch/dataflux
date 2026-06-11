@@ -29,7 +29,7 @@ class DBSyncReq(BaseDecryptReq):
     # 对外接口无影响，仅供后台 Worker 和 Engine 流转使用
     task_id: Optional[str] = Field(default=None, description="任务唯一标识(内部流转专用)")
 
-    db_type: Literal["mysql", "postgresql", "oracle", "mongodb", "dm", "ftp"] = Field(..., description="数据库类型")
+    db_type: Literal["mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api"] = Field(..., description="数据库类型")
     host: str = Field(..., description="主机地址 IP")
     port: int = Field(..., description="端口")
     username: str = Field(..., description="用户名")
@@ -91,6 +91,18 @@ class DBSyncReq(BaseDecryptReq):
         description="文件类型，auto则根据扩展名自动判断"
     )
 
+    # 接口采集专用
+    api_url: Optional[str] = Field(default=None, description="接口完整URL")
+    api_method: Optional[str] = Field(default="POST", description="请求方法: GET/POST/PUT")
+    api_headers: Optional[dict] = Field(default=None, description="请求头")
+    api_body: Optional[dict] = Field(default=None, description="请求体或查询参数")
+    api_extract_mode: Optional[Literal["data", "monitor", "both"]] = Field(
+        default="both", description="data=业务数据入PG, monitor=监控入InfluxDB, both=都要"
+    )
+    api_data_path: Optional[str] = Field(
+        default=None, description="响应体中业务数据的路径，如 data.list 或 $.data.list"
+    )
+
 
 # region ---- 任务管理 ----
 class TaskCreateReq(BaseDecryptReq):
@@ -127,6 +139,14 @@ class TaskCreateReq(BaseDecryptReq):
     ftp_passive: int = Field(default=1, description="是否使用FTP被动模式(1是 0否)")
     file_parse: int = Field(default=0, description="是否解析结构化文件内容入库(1是 0否)")
     file_type: Optional[Literal["csv", "json", "yaml", "auto"]] = Field(default="auto", description="文件类型:auto自动识别")
+
+    # 接口采集配置
+    api_url: Optional[str] = Field(default=None, description="接口完整URL")
+    api_method: Optional[str] = Field(default="POST", description="请求方法: GET/POST/PUT")
+    api_headers: Optional[dict] = Field(default=None, description="请求头")
+    api_body: Optional[dict] = Field(default=None, description="请求体或查询参数")
+    api_extract_mode: Optional[Literal["data", "monitor", "both"]] = Field(default="both")
+    api_data_path: Optional[str] = Field(default=None, description="响应体中业务数据的路径,如 data.list")
 
 
 class TaskUpdateReq(TaskCreateReq):
@@ -179,6 +199,10 @@ class TaskOut(BaseModel):
     ftp_passive: Optional[int] = 1
     file_parse: Optional[int] = 0
     file_type: Optional[str] = "auto"
+    api_url: Optional[str] = None
+    api_method: Optional[str] = "POST"
+    api_extract_mode: Optional[str] = "both"
+    api_data_path: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
