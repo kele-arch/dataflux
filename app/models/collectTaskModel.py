@@ -67,5 +67,13 @@ class CollectTask(Base, BaseModelMixin):
     file_parse: Mapped[bool] = mapped_column(Integer, default=0, comment="是否解析文件入库(1是 0否)")
     file_type: Mapped[str] = mapped_column(String(20), default="auto", comment="文件类型: auto/csv/json/yaml")
 
+    # 接口采集配置
+    api_url: Mapped[str | None] = mapped_column(String(500), nullable=True, comment="接口完整URL")
+    api_method: Mapped[str] = mapped_column(String(10), default="POST", comment="请求方法: GET/POST/PUT")
+    api_headers: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="请求头")
+    api_body: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="请求体或查询参数")
+    api_extract_mode: Mapped[str] = mapped_column(String(10), default="both", comment="data/monitor/both")
+    api_data_path: Mapped[str | None] = mapped_column(String(500), nullable=True, comment="响应体中业务数据的路径")
+
     def __repr__(self) -> str:
         return f"<CollectTask(task_name={self.task_name}, status={self.status})>"
