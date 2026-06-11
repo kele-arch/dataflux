@@ -36,6 +36,9 @@ def test_db_connection(req: DataSourceBase):
             )
             return BaseResponse(msg="连接成功！MongoDB 通信正常")
 
+        if req.type.lower() == "api":
+            return BaseResponse(code=0, msg="接口采集不需要测试连接，请在任务中配置 api_url 后直接执行")
+
         if req.type.lower() == "ftp":
             from ftplib import FTP, FTP_TLS, error_perm
             ftp = FTP()
@@ -120,6 +123,9 @@ def get_datasource_tables(req: DataSourceIdReq, db: Session = Depends(get_db)):
             )
             return BaseResponse(data=collections, msg="获取成功")
 
+        if source.type.lower() == "api":
+            return BaseResponse(code=0, msg="接口采集不支持表查询")
+
         if source.type.lower() == "ftp":
             return BaseResponse(code=0, msg="FTP 数据源不支持表查询，请在任务中配置 ftp_path")
 
@@ -149,6 +155,9 @@ def get_datasource_tables_detail(req: DataSourceIdReq, db: Session = Depends(get
                 data=_get_mongo_collections_detail(source),
                 msg="获取成功"
             )
+
+        if source.type.lower() == "api":
+            return BaseResponse(code=0, msg="接口采集不支持表结构查询")
 
         if source.type.lower() == "ftp":
             return BaseResponse(code=0, msg="FTP 数据源不支持表结构查询")
