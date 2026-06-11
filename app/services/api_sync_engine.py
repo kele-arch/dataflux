@@ -20,7 +20,7 @@ from sqlalchemy import JSON
 from app.core import logger
 from app.core.config import settings
 from app.core.influx_client import get_influx_client
-from app.db.session import engine as global_target_engine
+from app.db.session import collected_engine as global_target_engine
 from app.schemas.tsync import DBSyncReq
 from app.services.task_control import get_task_status, TASK_PAUSED, TASK_CANCELLED
 from app.exceptions import TaskPausedException, TaskCancelledException

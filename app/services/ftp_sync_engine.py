@@ -24,7 +24,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core import logger, project_rootpath
 from app.core.config import settings
-from app.db.session import engine as global_target_engine, SessionLocal
+from app.db.session import collected_engine as global_target_engine, SessionLocal
 from app.models.taskLogModel import FtpFileRecord
 from app.schemas.tsync import DBSyncReq
 from app.services.task_control import get_task_status, TASK_PAUSED, TASK_CANCELLED

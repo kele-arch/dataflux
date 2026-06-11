@@ -16,7 +16,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from urllib.parse import quote_plus
 
 from app.core import logger
-from app.db.session import engine as global_target_engine
+from app.db.session import collected_engine as global_target_engine
 from app.schemas.tsync import DBSyncReq
 from app.services.dialects import get_dialect_handler
 from app.services.task_control import get_task_status, save_watermark, TASK_PAUSED, TASK_CANCELLED
