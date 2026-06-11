@@ -37,6 +37,8 @@ class Settings(BaseSettings):
 
     ENABLE_TOKEN: bool = False  # 是否启动登陆验证
 
+    ENABLE_LICENSE: bool = True  # 是否启用 license.key 许可验证
+
     BATCH_SIZE: int = 10  # 批处理大小,默认 10 (任务中每次处理的记录数,处理一批则暂停检测状态)
     MONGO_BATCH_SIZE: int = 100  # MongoDB 批处理大小,默认 100 (MongoDB 连接相对较慢,适当增加批处理大小)
 
