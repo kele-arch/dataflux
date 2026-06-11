@@ -108,7 +108,8 @@ class ApiSyncEngine:
         tags = (
             f"task_id={task_id_safe},"
             f"method={method_safe},"
-            f"status_code={status_code}"
+            f"status_code={status_code},"
+            f"url={url_safe}"
         )
         fields = (
             f"response_time={elapsed_ms},"
@@ -317,6 +318,13 @@ class ApiSyncEngine:
             elapsed = round(time.time() - start_time, 2)
             logger.info(f"接口采集完成, 耗时 {elapsed}s, 业务数据: {parsed_rows} 条")
 
+            # 智能表名推导逻辑
+            _tbl = self.req.target_table
+            if not _tbl:
+                from urllib.parse import urlparse
+                _parts = [p for p in urlparse(self.req.api_url).path.split('/') if p]
+                _tbl = f"api_{_parts[-1]}" if _parts else "api_data"
+
             return {
                 "status": "success",
                 "tables_synced": 1 if parsed_rows > 0 else 0,
@@ -324,7 +332,7 @@ class ApiSyncEngine:
                 "new_watermark": None,
                 "table_details": [{
                     "name": self.req.api_url,
-                    "target_name": self.req.target_table or "api_data",
+                    "target_name": _tbl,
                     "records": parsed_rows,
                     "cost_seconds": elapsed,
                     "high_watermark": None
