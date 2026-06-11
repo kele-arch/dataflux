@@ -10,9 +10,11 @@ from .tsync import router as tsync_router
 from .datasource import router as datasource_router
 from .tasklog import router as tasklog_router
 from .exec_log import router as exec_log_router
+from .monitor import router as monitor_router
 
 api_router = APIRouter()
 api_router.include_router(tsync_router)
 api_router.include_router(datasource_router)
 api_router.include_router(tasklog_router)
 api_router.include_router(exec_log_router)
+api_router.include_router(monitor_router)
