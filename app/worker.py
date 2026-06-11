@@ -66,7 +66,7 @@ async def run_sync_job(ctx, task_id: str):
             logger.error(f"数据源缺少 db_name")
             return
 
-        # 拼装 DBSyncReq (引擎唯一识别的 Schema)
+        # 拼装 DBSyncReq (唯一识别的 Schema)
         sync_req = DBSyncReq(
             task_id=task.id,
             db_type=source.type,
@@ -83,17 +83,28 @@ async def run_sync_job(ctx, task_id: str):
             incremental_column=task.incremental_column,
             last_watermark=task.last_watermark,
             custom_sql=task.custom_sql,
+
             target_type=task.target_type or "postgresql",
             target_host=(task.target_host or source.host) if task.target_type == "mongodb" else None,
             target_port=(task.target_port or 27017) if task.target_type == "mongodb" else None,
             target_username=(task.target_username or source.username) if task.target_type == "mongodb" else None,
             target_password=(task.target_password or source.password) if task.target_type == "mongodb" else None,
             target_db_name=(task.target_db_name or settings.MONGO_DB_NAME) if task.target_type == "mongodb" else None,
+
+            # ftp
             ftp_url=task.ftp_url,
             ftp_path=task.ftp_path,
             ftp_passive=bool(task.ftp_passive),
             file_parse=bool(task.file_parse),
-            file_type=task.file_type
+            file_type=task.file_type,
+
+            # api
+            api_url=task.api_url,
+            api_method=task.api_method,
+            api_headers=task.api_headers,
+            api_body=task.api_body,
+            api_extract_mode=task.api_extract_mode,
+            api_data_path=task.api_data_path
         )
 
         # 创建 TaskLog 记录运行状态
@@ -108,7 +119,7 @@ async def run_sync_job(ctx, task_id: str):
 
         # 在线程池中执行同步
         def _execute():
-            engine = EngineFactory.create(sync_req)  # 一行搞定路由
+            engine = EngineFactory.create(sync_req)  # 路由自动判断选择
             return engine.main()
 
         result = await asyncio.to_thread(_execute)
