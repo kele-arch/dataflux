@@ -6,10 +6,21 @@
 # Copyright (c) 2025 by 胡H, All Rights Reserved.
 # @desc: man!!!
 
+import os
+
+# region 解除高并发线程池限制
+os.environ["ANYIO_MAX_THREADS"] = "150"  # 强制扩大 FastAPI 底层同步线程池
+# endregion
+
 import asyncio
+import time
 from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI
+from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from app.api.v1 import api_router
@@ -18,7 +29,7 @@ from app.core.influx_client import init_influx, close_influx
 from app.core.redis import close_redis, init_redis
 from app.db.session import init_db, engine
 from app.core.config import settings
-from app.core import logger
+from app.core import logger, project_rootpath
 from app.middleware import init_middlewares
 from app.core.arq_pool import init_arq_pool, close_arq_pool
 from app.services.scheduler_service import scheduler, refresh_scheduler_jobs
@@ -30,6 +41,34 @@ async def lifespan(app: FastAPI):
     :param app:
     :return:
     """
+    logger.info(r"""
+    ================================================================================
+
+    ██████╗  █████╗ ████████╗█████╗ ███████╗██╗     ██╗   ██╗██╗  ██╗
+    ██╔══██╗██╔══██╗╚══██╔══╝██╔══██╗██╔════╝██║     ██║   ██║╚██╗██╔╝
+    ██║  ██║███████║   ██║   ███████║█████╗  ██║     ██║   ██║ ╚███╔╝ 
+    ██║  ██║██╔══██║   ██║   ██╔══██║██╔══╝  ██║     ██║   ██║ ██╔██╗ 
+    ██████╔╝██║  ██║   ██║   ██║  ██║██║     ███████╗╚██████╔╝██╔╝ ██╗
+    ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝     ╚══════╝ ╚═════╝ ╚═╝  ╚═╝
+
+                                  数 据 采 集 平 台
+
+    ================================================================================
+    """)
+
+    # region 许可验证
+    if settings.ENABLE_LICENSE:
+        from app.core.license import check_license
+        if not check_license():
+            logger.error("许可验证未通过，程序终止启动")
+            import sys
+            sys.exit(1)
+    # endregion
+    # 记录启动开始时间
+    start_time = time.time()
+    start_dt = datetime.now()
+    logger.info(f"平台开始启动 | 时间: {start_dt.strftime('%Y-%m-%d %H:%M:%S')} | 时间戳: {start_time:.3f}")
+
     # SQL 数据库
     try:
         with engine.connect() as conn:
@@ -87,7 +126,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"调度系统启动失败! 错误: {e}")
 
-    logger.success("dataflux 工程初始化完成")
+    # yield 前记录启动完成时间
+    end_time = time.time()
+    elapsed = end_time - start_time
+    logger.success(
+        f"dataflux 工程初始化完成 | 启动耗时: {elapsed:.2f}s | 完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     yield  # <- 应用开始运行.  yield 之后的代码会在应用关闭时执行
     # 关闭前如果有资源要释放可以写这里(例如关闭数据库连接、Redis 连接等)
@@ -113,7 +156,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="dataflux", version="0.1", lifespan=lifespan)
+    app = FastAPI(title="数据采集平台", version="1.0", lifespan=lifespan, docs_url=None, redoc_url=None)
 
     # 中间件配置
     app.add_middleware(
@@ -124,6 +167,29 @@ def create_app() -> FastAPI:
         allow_headers=["*"],  # 允许的 HTTP 请求头列表 -> Content-Type Authorization...
     )
     init_middlewares(app)  # 注册中间件
+
+    app.mount("/static", StaticFiles(directory=Path(project_rootpath, "static")), name="static")  # 挂载静态文件目录
+
+    # 自定义 Swagger UI 路由
+    @app.get("/docs", include_in_schema=False)
+    async def custom_swagger():
+        return get_swagger_ui_html(
+            openapi_url=app.openapi_url,
+            title="自定义接口文档",
+            swagger_js_url="/static/swagger-ui-bundle.js",
+            swagger_css_url="/static/swagger-ui.css",
+            swagger_favicon_url="/static/favicon.png",
+        )
+
+    # 自定义 ReDoc 路由
+    @app.get("/redoc", include_in_schema=False)
+    async def custom_redoc():
+        return get_redoc_html(
+            openapi_url=app.openapi_url,
+            title="自定义接口文档",
+            redoc_js_url="/static/redoc.standalone.js",
+            redoc_favicon_url="/static/favicon.png",
+        )
 
     # 把 v1 的所有路由挂到 /api/v1
     app.include_router(api_router, prefix="/api/v1")
