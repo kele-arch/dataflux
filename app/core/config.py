@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     DB_POOL_RECYCLE: int = 1800  # 连接回收时间默认半小时
     DB_POOL_PRE_PING: bool = True  # 默认开启预检断连
 
+    # InfluxDB 配置
+    INFLUX_URL: str = "http://127.0.0.1:8181"
+    INFLUX_TOKEN: str = "apiv3_QFChw4KEwrJPBr_......"
+    INFLUX_DB: str = "testdb"
+
+
     class Config:
         env_file = project_rootpath / '.env'
         env_file_encoding = "utf-8"
