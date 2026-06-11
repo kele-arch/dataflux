@@ -8,7 +8,7 @@
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, declarative_base
 from app.core.config import settings
 from typing import Generator
 from sqlalchemy.engine import Engine
@@ -28,9 +28,35 @@ engine: Engine = create_engine(
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)  # Session 工厂
 
+Base = declarative_base()
+
 
 def get_db() -> Generator:
     db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+#  采集数据落地库
+
+collected_engine = create_engine(
+    settings.COLLECTED_DATABASE_URL,
+    pool_size=settings.DB_POOL_SIZE,
+    max_overflow=settings.DB_MAX_OVERFLOW,
+    pool_timeout=settings.DB_POOL_TIMEOUT,
+    pool_recycle=settings.DB_POOL_RECYCLE,
+    pool_pre_ping=settings.DB_POOL_PRE_PING,
+    future=True,
+)
+
+CollectedSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=collected_engine)
+
+
+def get_collected_db():
+    """ FastAPI 依赖注入:采集数据库会话（如需在API层直接查采集结果时使用） """
+    db = CollectedSessionLocal()
     try:
         yield db
     finally:
