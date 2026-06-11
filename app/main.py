@@ -14,6 +14,7 @@ from sqlalchemy import text
 
 from app.api.v1 import api_router
 from app.core.mongo import init_mongo, close_mongo
+from app.core.influx_client import init_influx, close_influx
 from app.core.redis import close_redis, init_redis
 from app.db.session import init_db, engine
 from app.core.config import settings
@@ -72,6 +73,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"ARQ 队列池连接失败! 错误: {e}")
 
+    # InfluxDB 时序监控数据库
+    try:
+        await init_influx()
+    except Exception as e:
+        logger.warning(f"InfluxDB 初始化失败, 监控写入将静默跳过: {e}")
+
     # 启动 APScheduler 定时器大脑
     try:
         scheduler.start()
@@ -99,6 +106,8 @@ async def lifespan(app: FastAPI):
         await asyncio.wait_for(close_mongo(), timeout=5.0)
     except asyncio.TimeoutError:
         logger.warning("MongoDB 关闭超时, 强制跳过")
+
+    await close_influx()
 
     logger.info('程序执行结束')
 
