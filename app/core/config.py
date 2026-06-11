@@ -15,9 +15,12 @@ class Settings(BaseSettings):
     ENV: str = "development"
     DB_SCHEMA: str = "public"
     DATABASE_URL: str = "postgresql+psycopg2://postgres:654321@localhost:5432/test"
-    SERVER_HOST: str = "0.0.0.0"
-    SERVER_PORT: int = 8011
+    SERVER_HOST: str = "127.0.0.1"
+    SERVER_PORT: int = 8028
     LOG_LEVEL: str = "info"
+
+    # 采集数据库连接配置
+    COLLECTED_DATABASE_URL: str = "postgresql+psycopg2://postgres:654321@localhost:5432/dataflux_collected"
 
     SECRET_KEY: str = "abc123xyz456def789ghi012jkl345mno678pqr901stu234vwx567yz"
     ALGORITHM: str = "HS256"
