@@ -5,14 +5,16 @@
 # @LastModified: 
 # Copyright (c) 2026 by 胡H, All Rights Reserved.
 # @desc: 数据同步任务管理
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Form, Response, Request, status
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.orm import Session
 
 from app.core import arq_pool as arq_module
 from app.crud.crud_tsync import crud_task
 from app.models.collectTaskModel import CollectTask
+from app.models.taskLogModel import TaskLog
 from app.schemas.tsync import DBSyncReq, TaskIdReq, TaskUpdateReq, TaskCreateReq, TaskPageQueryReq, TaskPageOut, \
     TaskOut, DashboardOut, TaskStatusReq
 from app.schemas.response import BaseResponse
@@ -22,7 +24,7 @@ from app.db.session import get_db
 from app.core import logger
 from app.services.scheduler_service import refresh_scheduler_jobs
 from app.utils.cron_helper import generate_cron_expression
-from app.services.task_control import set_task_status, TASK_PAUSED, TASK_CANCELLED, TASK_RUNNING
+from app.services.task_control import set_task_status, TASK_PAUSED, TASK_CANCELLED, TASK_RUNNING, get_saved_watermark
 
 router = APIRouter(prefix="/tsync", tags=["数据同步任务管理"])
 
@@ -118,17 +120,40 @@ async def run_sync_task(req: TaskIdReq, db: Session = Depends(get_db)):
         return BaseResponse(code=0, msg="任务处于停用状态, 无法执行")
 
     # 将耗时的同步任务扔给后台独立 Worker 进程
-    if arq_module.arq_pool:
-
-        await arq_module.arq_pool.enqueue_job('run_sync_job', task.id)
-
-        logger.info(f"手动触发同步任务 -> [ID:{task.id} 名称:{task.task_name}], 已推入后台队列")
-
-        # 立即响应前端,不等待执行结果
-        return BaseResponse(msg="执行指令已下发至后台队列,请稍后在日志中查看进度")
-    else:
+    if not arq_module.arq_pool:
         logger.error("ARQ 队列池未初始化,无法下发手动执行任务")
         return BaseResponse(code=0, msg="系统队列服务未就绪, 下发失败")
+
+    # 前置防抖拦截：检查分布式锁，防止产生僵尸 pending 记录
+    lock_key = f"sync_task_lock:{req.task_id}"
+    if await arq_module.arq_pool.exists(lock_key):
+        return BaseResponse(code=0, msg="任务正在排队或执行中, 请勿重复触发")
+
+    # 清理 Redis 控制信号
+    set_task_status(req.task_id, TASK_RUNNING)
+
+    # ORM 清理旧的 pending 僵尸日志
+    db.execute(
+        delete(TaskLog).where(TaskLog.task_id == task.id, TaskLog.status == "pending")
+    )
+    db.commit()
+
+    # 创建 pending 占坑日志
+    pending_log = TaskLog(
+        task_id=task.id,
+        task_name=task.task_name,
+        status="pending",
+        start_time=datetime.now()
+    )
+    db.add(pending_log)
+    db.commit()
+    db.refresh(pending_log)
+
+    # 推入 ARQ 队列
+    await arq_module.arq_pool.enqueue_job('run_sync_job', task.id)
+    logger.info(f"手动触发同步任务 -> [ID:{task.id} 名称:{task.task_name}], 已推入后台队列")
+
+    return BaseResponse(data={"log_id": pending_log.id, "status": "pending"}, msg="任务已进入执行队列")
 
 
 # region ---- 任务状态控制 (中断/恢复) ----
@@ -144,13 +169,75 @@ def cancel_task(req: TaskIdReq):
     return BaseResponse(msg="取消指令已下发, 任务将立即终止")
 
 
-@router.post("/resume", summary="清理中断状态(恢复默认)", response_model=BaseResponse)
-def resume_task(req: TaskIdReq):
+@router.post("/resume", summary="恢复已暂停的任务(水位线持久化+自动入队)", response_model=BaseResponse)
+async def resume_task(req: TaskIdReq, db: Session = Depends(get_db)):
+    task = db.execute(select(CollectTask).where(CollectTask.id == req.task_id)).scalar_one_or_none()
+    if not task:
+        return BaseResponse(code=0, msg="任务不存在")
+
+    if not arq_module.arq_pool:
+        return BaseResponse(code=0, msg="系统队列服务未就绪")
+
+    # 前置防抖：与 /run 一致，防止重复入队产生僵尸日志
+    lock_key = f"sync_task_lock:{req.task_id}"
+    if await arq_module.arq_pool.exists(lock_key):
+        return BaseResponse(code=0, msg="任务正在排队或执行中, 请勿重复触发")
+
+    # ORM 清理旧的 pending 僵尸日志
+    db.execute(
+        delete(TaskLog).where(TaskLog.task_id == task.id, TaskLog.status == "pending")
+    )
+    db.commit()
+
+    # 打捞 Redis 断点水位线并回写数据库
+    redis_watermark = get_saved_watermark(req.task_id)
+    if redis_watermark:
+        task.last_watermark = redis_watermark
+        logger.info(f"任务 [{req.task_id}] 水位线已从 Redis 回写: {redis_watermark}")
+
+    # 清除 Redis 控制信号
     set_task_status(req.task_id, TASK_RUNNING)
-    return BaseResponse(msg="状态锁已清理, 任务下一次将正常运行")
+
+    # 自动生成续传 pending 日志
+    pending_log = TaskLog(
+        task_id=task.id,
+        task_name=task.task_name,
+        status="pending",
+        start_time=datetime.now(),
+        error_msg="断点续传任务启动中..."
+    )
+    db.add(pending_log)
+    db.commit()
+    db.refresh(pending_log)
+
+    # 自动入队启动
+    await arq_module.arq_pool.enqueue_job('run_sync_job', task.id)
+
+    return BaseResponse(data={"log_id": pending_log.id, "status": "pending"}, msg="任务断点已恢复,成功重新入队运行")
 
 
 # endregion
+
+
+@router.post("/clean", summary="强制重置卡死任务(解锁+清理僵尸日志)", response_model=BaseResponse)
+async def clean_task_zombie_state(req: TaskIdReq, db: Session = Depends(get_db)):
+    # 清除 Redis 分布式锁和控制信号
+    lock_key = f"sync_task_lock:{req.task_id}"
+    control_key = f"task_control:{req.task_id}"
+    if arq_module.arq_pool:
+        await arq_module.arq_pool.delete(lock_key)
+        await arq_module.arq_pool.delete(control_key)
+
+    # 将该任务所有未结束的日志标记为 failed
+    db.execute(
+        delete(TaskLog).where(
+            TaskLog.task_id == req.task_id,
+            TaskLog.status.in_(["pending", "running"])
+        )
+    )
+    db.commit()
+    logger.warning(f"管理员手动清除了任务 [{req.task_id}] 的卡死锁及僵尸日志")
+    return BaseResponse(msg="任务锁已解开，僵尸状态已强制重置，可以重新点击执行")
 
 
 @router.post("/detail", summary="获取任务详情", response_model=BaseResponse[TaskOut])

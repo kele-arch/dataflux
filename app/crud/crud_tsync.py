@@ -13,6 +13,7 @@ from datetime import datetime
 from app.models.collectTaskModel import CollectTask
 from app.models.taskLogModel import TaskLog
 from app.schemas.tsync import TaskCreateReq, TaskUpdateReq, TaskPageQueryReq
+from app.services.task_control import _get_redis
 
 
 class CRUDCollectTask:
@@ -55,7 +56,7 @@ class CRUDCollectTask:
         return result.rowcount > 0
 
     def get_list(self, db: Session, req: TaskPageQueryReq) -> dict:
-        """ 分页与条件查询 (支持排序) """
+        """ 分页与条件查询 (支持排序), 附带每项任务的 run_status """
         # 动态排序
         sort_col = getattr(CollectTask, req.sort_by or "create_time", CollectTask.create_time)
         order = sort_col.desc() if req.sort_order == "desc" else sort_col.asc()
@@ -71,10 +72,53 @@ class CRUDCollectTask:
         total_stmt = select(func.count()).select_from(stmt.subquery())
         total = db.execute(total_stmt).scalar() or 0
 
-        # 分页
+        # 分页查出当前页的 Task
         offset = (req.page - 1) * req.size
         stmt = stmt.offset(offset).limit(req.size)
         items = db.execute(stmt).scalars().all()
+
+        # 批量获取日志并注入 run_status
+        if items:
+            # 收集当前页所有的 task_id
+            task_ids = [item.id for item in items]
+
+            # 一次性查出这些 task_id 的所有关联日志（按时间倒序排好）
+            logs_stmt = (
+                select(TaskLog)
+                .where(TaskLog.task_id.in_(task_ids))
+                .order_by(TaskLog.task_id, TaskLog.start_time.desc())
+            )
+            all_logs = db.execute(logs_stmt).scalars().all()
+
+            # 在 Python 内存中对日志进行分组, 只取每个任务的第一条（最新一条）
+            latest_logs_map = {}
+            for log in all_logs:
+                if log.task_id not in latest_logs_map:
+                    latest_logs_map[log.task_id] = log
+
+            # 以 Redis 锁为最高准则注入 run_status（根治脑裂）
+            active_statuses = {"pending", "running", "paused", "cancelled"}
+            r_client = _get_redis()
+            for item in items:
+                lock_key = f"sync_task_lock:{item.id}"
+
+                # 规则 1：Redis 锁存在 → 强行判定 running（即使 DB 日志已结束）
+                if r_client.exists(lock_key):
+                    latest_log = latest_logs_map.get(item.id)
+                    item.run_status = "running"
+                    item.current_log_id = latest_log.id if latest_log else None
+                # 规则 2：锁不存在 → 按 DB 日志状态判定
+                else:
+                    latest_log = latest_logs_map.get(item.id)
+                    if latest_log and latest_log.status in active_statuses:
+                        item.run_status = latest_log.status
+                        item.current_log_id = latest_log.id
+                    else:
+                        item.run_status = "idle"
+                        item.current_log_id = None
+        else:
+            # 如果当前页没数据,直接忽略
+            pass
 
         return {
             "total": total,
