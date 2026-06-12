@@ -216,6 +216,9 @@ class FtpSyncEngine:
             "json": "json",
             "yaml": "yaml",
             "yml": "yaml",
+            "xlsx": "xlsx",
+            "xls": "xlsx",
+            "xml": "xml",
         }
         return type_map.get(ext, "binary")
 
@@ -387,6 +390,50 @@ class FtpSyncEngine:
                     rows.append({"value": str(doc)})
             total_inserted = self._ingest_memory_rows(rows, target_table)
             logger.info(f"YAML 解析成功, 共 {total_inserted} 条")
+            return total_inserted
+
+        # 处理 Excel (.xlsx / .xls)
+        elif file_type == "xlsx":
+            import openpyxl
+            wb = openpyxl.load_workbook(local_path, read_only=True, data_only=True)
+            rows = []
+            for sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                headers = None
+                for row in ws.iter_rows(values_only=True):
+                    if headers is None:
+                        headers = [str(c or "") for c in row]
+                        continue
+                    rows.append(dict(zip(headers, [str(v) if v is not None else "" for v in row])))
+            wb.close()
+            total_inserted = self._ingest_memory_rows(rows, target_table)
+            logger.info(f"Excel 解析成功, {len(wb.sheetnames)} 个工作表, 共 {total_inserted} 条")
+            return total_inserted
+
+        # 处理 XML
+        elif file_type == "xml":
+            import xml.etree.ElementTree as ET
+            tree = ET.parse(local_path)
+            root = tree.getroot()
+
+            def _xml_to_dict(elem):
+                """ 递归将 XML 元素转为 dict """
+                d = {"_tag": elem.tag}
+                if elem.attrib:
+                    d.update(elem.attrib)
+                if elem.text and elem.text.strip():
+                    d["_text"] = elem.text.strip()
+                children = list(elem)
+                if children:
+                    for child in children:
+                        child_dict = _xml_to_dict(child)
+                        child_tag = child.tag
+                        d[child_tag] = child_dict
+                return d
+
+            rows = [_xml_to_dict(root)]
+            total_inserted = self._ingest_memory_rows(rows, target_table)
+            logger.info(f"XML 解析成功, 共 {total_inserted} 条")
             return total_inserted
 
         else:

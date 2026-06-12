@@ -86,7 +86,7 @@ class DBSyncReq(BaseDecryptReq):
     ftp_passive: int = Field(default=1, description="是否使用FTP被动模式(1是 0否)")
     local_save_dir: Optional[str] = Field(default=None, description="本地存储目录,不填则用配置默认目录")
     file_parse: int = Field(default=0, description="是否解析结构化文件内容入库(1是 0否)")
-    file_type: Optional[Literal["csv", "json", "yaml", "auto"]] = Field(
+    file_type: Optional[Literal["csv", "json", "yaml", "xlsx", "xml", "auto"]] = Field(
         default="auto",
         description="文件类型，auto则根据扩展名自动判断"
     )
@@ -138,7 +138,7 @@ class TaskCreateReq(BaseDecryptReq):
     ftp_path: Optional[str] = Field(default=None, description="FTP远程文件路径,如 /data/report.csv")
     ftp_passive: int = Field(default=1, description="是否使用FTP被动模式(1是 0否)")
     file_parse: int = Field(default=0, description="是否解析结构化文件内容入库(1是 0否)")
-    file_type: Optional[Literal["csv", "json", "yaml", "auto"]] = Field(default="auto", description="文件类型:auto自动识别")
+    file_type: Optional[Literal["csv", "json", "yaml", "xlsx", "xml", "auto"]] = Field(default="auto", description="文件类型:auto自动识别")
 
     # 接口采集配置
     api_url: Optional[str] = Field(default=None, description="接口完整URL")
