@@ -94,7 +94,7 @@ async def run_sync_job(ctx, task_id: str):
             # ftp
             ftp_url=task.ftp_url,
             ftp_path=task.ftp_path,
-            ftp_passive=bool(task.ftp_passive),
+            ftp_passive=bool(task.ftp_passive) if task.ftp_passive is not None else True,
             file_parse=bool(task.file_parse),
             file_type=task.file_type,
 
@@ -107,14 +107,25 @@ async def run_sync_job(ctx, task_id: str):
             api_data_path=task.api_data_path
         )
 
-        # 创建 TaskLog 记录运行状态
-        task_log = TaskLog(
-            task_id=task.id,
-            task_name=task.task_name,
-            status="running",
-            start_time=datetime.now()
-        )
-        db.add(task_log)
+        # 查找 /run 接口提前写入的 pending 日志并更新为 running
+        task_log = db.execute(
+            select(TaskLog).where(
+                TaskLog.task_id == task.id,
+                TaskLog.status == "pending"
+            ).order_by(TaskLog.start_time.desc()).limit(1)
+        ).scalar_one_or_none()
+
+        if task_log:
+            task_log.status = "running"
+            task_log.start_time = datetime.now()
+        else:
+            task_log = TaskLog(
+                task_id=task.id,
+                task_name=task.task_name,
+                status="running",
+                start_time=datetime.now()
+            )
+            db.add(task_log)
         db.commit()
 
         # 在线程池中执行同步
