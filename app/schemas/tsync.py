@@ -82,6 +82,7 @@ class DBSyncReq(BaseDecryptReq):
 
     # FTP配置参数
     ftp_url: Optional[str] = Field(default=None, description="FTP完整URL,如 ftp://admin:123456@127.0.0.1:21/data/file.yaml, 传了则自动解析覆盖host/port/username/password/ftp_path")
+    ftp_url_scheme: Optional[str] = Field(default=None, description="内部流转: URL解析出的协议类型(ftp/ftps/sftp/sdtp)")
     ftp_path: Optional[str] = Field(default=None, description="FTP远程文件路径,如 /data/calico.yaml")
     ftp_passive: int = Field(default=1, description="是否使用FTP被动模式(1是 0否)")
     local_save_dir: Optional[str] = Field(default=None, description="本地存储目录,不填则用配置默认目录")
