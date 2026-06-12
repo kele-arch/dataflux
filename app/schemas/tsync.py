@@ -179,6 +179,8 @@ class TaskOut(BaseModel):
     source_id: Optional[str] = None
     topic_or_table: Optional[str]
     status: int
+    run_status: Optional[str] = "idle"
+    current_log_id: Optional[str] = None
     sync_mode: str
     collect_mode: str
     incremental_column: Optional[str]
