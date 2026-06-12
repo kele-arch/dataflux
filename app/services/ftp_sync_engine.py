@@ -10,11 +10,9 @@ import csv
 import hashlib
 import json
 import os
-import ssl
 import time
-import uuid
 from datetime import datetime
-from ftplib import FTP, FTP_TLS, error_perm
+from ftplib import error_perm
 from pathlib import Path
 from typing import Optional
 
@@ -29,13 +27,14 @@ from app.models.taskLogModel import FtpFileRecord
 from app.schemas.tsync import DBSyncReq
 from app.services.task_control import get_task_status, TASK_PAUSED, TASK_CANCELLED
 from app.exceptions import TaskPausedException, TaskCancelledException
+from app.services.file_client_factory import FileClientFactory
 
 
 class FtpSyncEngine:
     """
     FTP 文件采集
       - 单文件下载 + MD5 去重
-      - 结构化文件解析入库（CSV / JSON / YAML）
+      - 结构化文件解析入库(CSV / JSON / YAML)
       - 二进制/任意文件仅存储本地 + 记录元数据
     """
 
@@ -46,25 +45,24 @@ class FtpSyncEngine:
         self.req = req
         self.target_engine = target_engine
         self.batch_size = getattr(settings, "BATCH_SIZE", 1000)
+        self.file_client = None
 
-        # 如果传了完整 FTP URL, 自动解析覆盖各字段
+        # 如果传了完整 URL, 自动解析覆盖各字段
         if getattr(self.req, "ftp_url", None):
-            self._parse_ftp_url(self.req.ftp_url)
+            self._parse_url(self.req.ftp_url)
 
-    def _parse_ftp_url(self, ftp_url: str):
+    def _parse_url(self, url: str):
         """
-        解析标准 FTP URL, 覆盖 req 里的连接字段
-        支持: ftp://user:pass@host:port/path
-              ftp://user@host/path
-              ftp://host/path
-              ftps://...
+        解析多协议 URL, 覆盖 req 里的连接字段
+        支持: ftp://  ftps://  sftp://  sdtp://
         """
         from urllib.parse import urlparse, unquote
 
-        parsed = urlparse(ftp_url)
+        parsed = urlparse(url)
+        scheme = parsed.scheme.lower()
 
-        if parsed.scheme.lower() not in ("ftp", "ftps"):
-            raise ValueError(f"不支持的协议: {parsed.scheme}, 仅支持 ftp:// 或 ftps://")
+        if scheme not in FileClientFactory.SUPPORTED_SCHEMES:
+            raise ValueError(f"不支持的协议: {scheme}, 支持: {FileClientFactory.SUPPORTED_SCHEMES}")
 
         if parsed.hostname:
             self.req.host = parsed.hostname
@@ -75,66 +73,28 @@ class FtpSyncEngine:
         if parsed.password:
             self.req.password = unquote(parsed.password)
         if parsed.path:
-            self.req.ftp_path = parsed.path
+            # FTP/FTPS 虚拟目录需要去掉前导 / ; SFTP/SDTP 保留绝对路径
+            self.req.ftp_path = parsed.path.lstrip("/") if scheme in ("ftp", "ftps") else parsed.path
+        self.req.ftp_url = None  # 防止重复解析
+        self.req.ftp_url_scheme = scheme  # 保存 scheme 供工厂路由
 
         logger.info(
-            f"FTP URL 解析完成: host={self.req.host}, port={self.req.port or 21}, user={self.req.username}, path={self.req.ftp_path}")
+            f"[{scheme}] URL 解析: host={self.req.host}, port={self.req.port}, user={self.req.username}, path={self.req.ftp_path}")
 
     #  FTP 连接
 
-    def _connect(self) -> FTP:
-        """
-        建立 FTP 连接, 支持主动/被动模式及自动识别 FTPS 加密 (带 TLS 会话复用补丁)
-        """
-
-        # 修复 Python 标准库与 FileZilla 等服务端的 TLS 会话复用不兼容 Bug
-        class FTP_TLS_Reused(FTP_TLS):
-            def ntransfercmd(self, cmd, rest=None):
-                # 用 super(FTP_TLS, self) 而不是 FTP.ntransfercmd(self, ...)
-                conn, size = super(FTP_TLS, self).ntransfercmd(cmd, rest)
-                if self._prot_p:
-                    conn = self.context.wrap_socket(
-                        conn,
-                        server_hostname=self.host,
-                        session=self.sock.session
-                    )
-                return conn, size
-
-        ftp = FTP()
-        try:
-            ftp.connect(host=self.req.host, port=self.req.port or 21, timeout=30)
-            ftp.login(
-                user=self.req.username or "anonymous",
-                passwd=self.req.password or ""
-            )
-        except error_perm as e:
-            if "503" in str(e) or "AUTH" in str(e).upper():
-                ftp.close()
-                logger.info(f"源 FTP [{self.req.host}] 要求安全连接, 正在切换至 FTPS (带会话复用补丁)...")
-
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-
-                # 使用打过补丁的类建立连接
-                ftp = FTP_TLS_Reused(context=ctx)
-                ftp.connect(host=self.req.host, port=self.req.port or 21, timeout=30)
-                ftp.login(
-                    user=self.req.username or "anonymous",
-                    passwd=self.req.password or ""
-                )
-                ftp.prot_p()  # 必须调用：保护数据连接
-            else:
-                raise e
-
-        # 设置被动/主动模式 (转为 int 判断, 兼容 PostgreSQL 的设定)
-        if getattr(self.req, "ftp_passive", 1) == 1:
-            ftp.set_pasv(True)
-        else:
-            ftp.set_pasv(False)
-
-        logger.info(f"FTP(S) 连接成功: {self.req.host}:{self.req.port or 21}")
-        return ftp
+    def _connect_client(self):
+        """ 通过工厂创建多协议客户端并连接 (FTP/FTPS/SFTP/SDTP) """
+        scheme = getattr(self.req, 'ftp_url_scheme', None) or self.req.db_type or 'ftp'
+        # 将 db_type=ftp 映射为默认 ftp（兼容纯表单配置）
+        self.file_client = FileClientFactory.create(scheme)
+        self.file_client.connect(
+            host=self.req.host,
+            port=self.req.port,
+            username=self.req.username,
+            password=self.req.password,
+            passive=self.req.ftp_passive if getattr(self.req, "ftp_passive", None) is not None else True
+        )
 
     #  MD5 计算
 
@@ -160,38 +120,11 @@ class FtpSyncEngine:
         file_name = os.path.basename(remote_path)
         return os.path.join(task_dir, file_name)
 
-    def _download_file(self, ftp, remote_path: str, local_path: str) -> int:
-        """
-
-        """
-        total_bytes = 0
-        with open(local_path, "wb") as f:
-            def callback(chunk):
-                nonlocal total_bytes
-                f.write(chunk)
-                total_bytes += len(chunk)
-
-            try:
-                ftp.retrbinary(f"RETR {remote_path}", callback, blocksize=8192)
-            except Exception as e:
-                err_str = str(e)
-                if any(k in err_str for k in [
-                    "SHUTDOWN_WHILE_IN_INIT", "EOF occurred",
-                    "WRONG_VERSION_NUMBER", "Connection reset"
-                ]):
-                    logger.warning(f"SSL 数据连接正常关闭, 已接收 {total_bytes} 字节")
-                else:
-                    raise
-
-        actual_size = os.path.getsize(local_path)
-        if actual_size == 0:
-            raise RuntimeError(f"文件下载后为空: {remote_path}, 请检查路径或权限")
-
-        logger.info(f"下载完成: {remote_path} -> {local_path} ({actual_size} bytes)")
-        return actual_size
+    def _generate_row_id(self, row_dict: dict) -> str:
+        """ 基于行内容的 MD5 哈希生成幂等主键, 重复执行不产生脏数据 """
+        return hashlib.md5(json.dumps(row_dict, sort_keys=True, default=str).encode('utf-8')).hexdigest()
 
     #  JSONB 序列化清洗
-
     def _sanitize_for_jsonb(self, obj):
         """ 递归清洗对象, 确保所有值都能被 JSON 接受 """
         try:
@@ -316,9 +249,9 @@ class FtpSyncEngine:
                 self._check_task_status()
 
                 batch = rows[i: i + self.batch_size]
-                batch_data = [{"id": uuid.uuid4().hex, "raw_doc": row} for row in batch]
+                batch_data = [{"id": self._generate_row_id(row), "raw_doc": row} for row in batch]
 
-                stmt = pg_insert(target_table).values(batch_data)
+                stmt = pg_insert(target_table).values(batch_data).on_conflict_do_nothing(index_elements=['id'])
                 conn.execute(stmt)
                 total_inserted += len(batch)
 
@@ -348,17 +281,23 @@ class FtpSyncEngine:
                         batch_data = []
                         with self.target_engine.begin() as conn:
                             for row in reader:
+                                row_dict = dict(row)
                                 batch_data.append(
-                                    {"id": uuid.uuid4().hex, "raw_doc": self._sanitize_for_jsonb(dict(row))})
+                                    {"id": self._generate_row_id(row_dict),
+                                     "raw_doc": self._sanitize_for_jsonb(row_dict)})
                                 # 满一批次落盘并清空内存
                                 if len(batch_data) >= self.batch_size:
                                     self._check_task_status()
-                                    conn.execute(pg_insert(target_table).values(batch_data))
+                                    stmt = pg_insert(target_table).values(batch_data).on_conflict_do_nothing(
+                                        index_elements=['id'])
+                                    conn.execute(stmt)
                                     total_inserted += len(batch_data)
                                     batch_data.clear()
                             # 尾部处理
                             if batch_data:
-                                conn.execute(pg_insert(target_table).values(batch_data))
+                                stmt = pg_insert(target_table).values(batch_data).on_conflict_do_nothing(
+                                    index_elements=['id'])
+                                conn.execute(stmt)
                                 total_inserted += len(batch_data)
                     logger.info(f"CSV 流式解析入库成功, 编码: {encoding}, 共 {total_inserted} 行")
                     return total_inserted
@@ -428,7 +367,12 @@ class FtpSyncEngine:
                     for child in children:
                         child_dict = _xml_to_dict(child)
                         child_tag = child.tag
-                        d[child_tag] = child_dict
+                        if child_tag in d:
+                            if not isinstance(d[child_tag], list):
+                                d[child_tag] = [d[child_tag]]
+                            d[child_tag].append(child_dict)
+                        else:
+                            d[child_tag] = child_dict
                 return d
 
             rows = [_xml_to_dict(root)]
@@ -441,15 +385,16 @@ class FtpSyncEngine:
             return 0
 
     def _ingest_memory_rows(self, rows: list, target_table: Table) -> int:
-        """ 辅助方法：将内存中的 list (JSON/YAML) 分批写入 """
+        """ 将内存中的 list (JSON/YAML) 分批写入 """
         if not rows: return 0
         total = 0
         with self.target_engine.begin() as conn:
             for i in range(0, len(rows), self.batch_size):
                 self._check_task_status()
-                batch = [{"id": uuid.uuid4().hex, "raw_doc": self._sanitize_for_jsonb(row)} for row in
+                batch = [{"id": self._generate_row_id(row), "raw_doc": self._sanitize_for_jsonb(row)} for row in
                          rows[i: i + self.batch_size]]
-                conn.execute(pg_insert(target_table).values(batch))
+                stmt = pg_insert(target_table).values(batch).on_conflict_do_nothing(index_elements=['id'])
+                conn.execute(stmt)
                 total += len(batch)
         return total
 
@@ -501,20 +446,18 @@ class FtpSyncEngine:
         logger.info(f"启动 FTP 采集, 源: ftp://{self.req.host}{remote_path}")
 
         db = SessionLocal()
-        ftp = None
         start_time = time.time()
 
         try:
             # 查历史记录
             existing_record = self._get_file_record(db, task_id, remote_path)
 
-            # 连接 FTP
-            # ftp, is_ftps = self._connect()
-            ftp = self._connect()
+            # 多协议连接 (FTP/FTPS/SFTP/SDTP 自动适配)
+            self._connect_client()
 
-            # 下载文件
+            # 下载文件 (带毫秒级状态探针)
             self._check_task_status()
-            file_size = self._download_file(ftp, remote_path, local_path)
+            file_size = self.file_client.download(remote_path, local_path, self._check_task_status)
 
             # 计算 MD5
             new_md5 = self._compute_md5(local_path)
@@ -595,10 +538,7 @@ class FtpSyncEngine:
             raise
 
         finally:
-            if ftp:
-                try:
-                    ftp.quit()
-                except Exception:
-                    ftp.close()
-                logger.info("FTP 连接已关闭")
+            if self.file_client:
+                self.file_client.close()
+                logger.info("文件客户端连接已关闭")
             db.close()
