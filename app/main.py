@@ -27,7 +27,7 @@ from app.api.v1 import api_router
 from app.core.mongo import init_mongo, close_mongo
 from app.core.influx_client import init_influx, close_influx
 from app.core.redis import close_redis, init_redis
-from app.db.session import init_db, engine
+from app.db.session import init_db, engine, SessionLocal
 from app.core.config import settings
 from app.core import logger, project_rootpath
 from app.middleware import init_middlewares
@@ -85,6 +85,24 @@ async def lifespan(app: FastAPI):
             raise  # 终止启动
         else:
             logger.warning(f"关系SQL 连接失败, 已忽略. 错误: {e}")
+
+    # 系统启动时自动清洗因宕机残留的僵尸日志 (pending/running → failed)
+    try:
+        from app.models.taskLogModel import TaskLog as _TaskLog
+        from sqlalchemy import update as _update
+        _db = SessionLocal()
+        _result = _db.execute(
+            _update(_TaskLog)
+            .where(_TaskLog.status.in_(["pending", "running"]))
+            .values(status="failed", end_time=datetime.now(),
+                    error_msg="系统重启，未正常结束的任务被自动判定为异常终止")
+        )
+        _db.commit()
+        if _result.rowcount > 0:
+            logger.warning(f"发现并清理了 {_result.rowcount} 条因服务重启卡死的僵尸任务日志")
+        _db.close()
+    except Exception as e:
+        logger.warning(f"僵尸任务清洗失败(已忽略): {e}")
 
     # Redis
     try:
