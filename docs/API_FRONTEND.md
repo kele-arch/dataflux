@@ -550,24 +550,155 @@
 {"task_id": "550e8400e29b41d4a716446655440000"}
 ```
 
+| 情况 | 响应 |
+|------|------|
+| 正常入队 | `{"code":1, "msg":"任务已进入执行队列", "data":{"log_id":"xxx", "status":"pending"}}` |
+| 任务正运行中 | `{"code":0, "msg":"任务正在排队或执行中, 请勿重复触发"}` |
+| 任务停用 | `{"code":0, "msg":"任务处于停用状态, 无法执行"}` |
+| 队列未就绪 | `{"code":0, "msg":"系统队列服务未就绪, 下发失败"}` |
+
+**`/run` 内部流程：**
+
+```
+1. 校验任务存在 + 启用状态
+2. 前置防抖：检查 Redis 分布式锁 → 锁还在 → 拒绝"请勿重复"
+3. 清除 Redis 中残留的 paused/cancelled 标记
+4. ORM 删除该任务旧的 pending 僵尸日志
+5. 创建新 pending 状态占坑日志
+6. 推入 ARQ 队列 → Worker 接管
+```
+
+**任务状态机：**
+
+```
+pending → running → success
+                  → failed
+                  → paused
+                  → cancelled
+```
+
+| status | 含义 | 前端处理 |
+|--------|------|----------|
+| `pending` | 🟡 排队中 | 继续轮询，3s/次 |
+| `running` | 🔵 运行中 | 继续轮询 |
+| `success` | 🟢 成功 | 停止轮询 |
+| `failed` | 🔴 失败 | 停止轮询，展示 error_msg |
+| `paused` | ⏸️ 暂停 | 用户手动暂停 |
+| `cancelled` | ❌ 取消 | 用户手动取消 |
+
+**前端轮询示例：**
+
+```javascript
+// 点击执行后拿到 log_id 和 status
+const { log_id } = response.data;
+const timer = setInterval(async () => {
+  const res = await fetch(`/api/v1/tasklog/detail?log_id=${log_id}`);
+  const { status, error_msg } = res.data;
+  if (status === 'success') { clearInterval(timer); /* 成功处理 */ }
+  if (status === 'failed')  { clearInterval(timer); /* 展示 error_msg */ }
+}, 3000);
+```
+
+---
+
+### 7. 暂停正在执行的任务
+
+`POST /tsync/pause`
+
+```json
+{"task_id": "550e8400e29b41d4a716446655440000"}
+```
+
+响应：
+
+```json
+{"code": 1, "msg": "暂停指令已下发, 任务将在当前批次完成后优雅暂停", "data": null}
+```
+
+> 引擎在当前批次落盘后检测到暂停信号 → 将水位线保存到 Redis → 抛出 `TaskPausedException` → Worker 将 TaskLog 状态更新为 `paused`。恢复时调用 `/resume`，水位线从 Redis 回写到数据库。
+
+---
+
+### 8. 取消正在执行的任务
+
+`POST /tsync/cancel`
+
+```json
+{"task_id": "550e8400e29b41d4a716446655440000"}
+```
+
+响应：
+
+```json
+{"code": 1, "msg": "取消指令已下发, 任务将立即终止", "data": null}
+```
+
+> 引擎在当前批次检测到取消信号 → 不保存水位线 → 抛出 `TaskCancelledException` → Worker 将 TaskLog 更新为 `cancelled`。取消后需重新全量执行（水位线已丢失）。
+
+---
+
+### 9. 恢复已暂停的任务
+
+`POST /tsync/resume`
+
+```json
+{"task_id": "550e8400e29b41d4a716446655440000"}
+```
+
 响应：
 
 ```json
 {
   "code": 1,
-  "msg": "任务执行完毕",
-  "data": {
-    "status": "success",
-    "tables_synced": 2,
-    "total_records": 15000,
-    "new_watermark": "2026-06-05 12:00:00"
-  }
+  "msg": "任务断点已恢复,成功重新入队运行",
+  "data": {"log_id": "aabbccdd...", "status": "pending"}
 }
 ```
 
+**`/resume` 完整流程：**
+
+```
+1. 从 Redis 打捞暂停时保存的断点水位线 → 回写到任务表的 last_watermark
+2. 清除 Redis 中的 paused/cancelled 控制信号
+3. 创建 pending 状态占坑日志
+4. 自动入队 ARQ，Worker 接管后续执行
+```
+
+> 无需再点 `/run`，`/resume` 已自动完成入队。Worker 从数据库读取 `last_watermark`，从断点继续增量同步。
+
 ---
 
-### 7. 任务列表
+### 10. 强制重置卡死任务
+
+`POST /tsync/clean`
+
+```json
+{"task_id": "550e8400e29b41d4a716446655440000"}
+```
+
+响应：
+
+```json
+{"code": 1, "msg": "任务锁已解开，僵尸状态已强制重置，可以重新点击执行", "data": null}
+```
+
+**使用场景：** 系统崩溃重启后，任务卡死在 `running`/`pending` 状态，前端按钮一直是 `[暂停]` 无法操作。
+
+**`/clean` 执行动作：**
+
+```
+1. 删除 Redis 分布式锁 sync_task_lock:{task_id}
+2. 删除 Redis 控制信号 task_control:{task_id}
+3. 删除数据库中该任务所有 pending/running 状态的日志
+```
+
+> 建议在前端任务列表的操作列中加一个 **【解锁】** 按钮，仅在 `run_status` 异常卡死时显示。
+
+**系统也具备自动清理能力：** 每次重启时，会自动将所有 `pending`/`running` 日志标记为 `failed`，避免残留僵尸状态。
+
+---
+
+### 11. 任务列表
 
 `POST /tsync/list`
 
@@ -599,6 +730,8 @@
         "source_id": "aabbccdd...",
         "topic_or_table": "users",
         "status": 1,
+        "run_status": "running",
+        "current_log_id": "log-uuid-xxx",
         "sync_mode": "overwrite",
         "collect_mode": "inc_time",
         "incremental_column": "update_time",
@@ -607,15 +740,45 @@
         "sync_tables": ["users", "orders"],
         "create_time": "2026-06-05T10:00:00",
         "update_time": "2026-06-05T10:00:00"
+      },
+      {
+        "id": "550e8400e29b41d4...",
+        "task_name": "FTP文件采集",
+        "status": 1,
+        "run_status": "idle",
+        "current_log_id": null
       }
     ]
   }
 }
 ```
 
+| run_status | 含义 | 触发条件 | 前端按钮状态 |
+|-----------|------|----------|------------|
+| `idle` | 空闲 | 没有任何日志，或最近一次日志是 `success`/`failed`/`cancelled` | 🔵 **[执行]** |
+| `pending` | 排队中 | API 已下发，但 Worker 尚未拿到锁 | ⏳ 按钮全部置灰，不可操作 |
+| `running` | 运行中 | Worker 已获取锁并开始执行 | 🟡 **[暂停]** + **[取消]** |
+| `paused` | 已暂停 | 用户点击暂停，引擎在当前批次后中断，水位线已保存 | 🟠 **[恢复]** |
+| `cancelled` | 已取消 | 用户点击取消，引擎立即终止，水位线丢失 | 任务下次执行时自动变回 `idle` |
+| `success` | 已完成 | 最近一次执行成功 | 自动变回 `idle` |
+| `failed` | 已失败 | 最近一次执行失败 | 自动变回 `idle` |
+
+**`run_status` 判定逻辑（后端）：**
+
+```
+查该任务最新一条 sys_task_log
+  ↓
+  无日志 → idle
+  有日志 → 看 status 字段
+    ├─ pending / running / paused / cancelled → 直接用这个值
+    └─ success / failed → idle（说明任务已结束，当前空闲）
+```
+
+> `run_status` 由后端自动注入，前端无需查询日志表。`current_log_id` 可用于直接跳转日志详情页。
+
 ---
 
-### 8. 任务详情
+### 12. 任务详情
 
 `POST /tsync/detail`
 
@@ -627,7 +790,7 @@
 
 ---
 
-### 9. 仪表盘统计
+### 13. 仪表盘统计
 
 `POST /tsync/dashboard`
 
@@ -677,7 +840,7 @@
 | task_name | string | ❌ | 按任务名模糊搜索 |
 | page | int | ❌ | 页码，默认 1 |
 | size | int | ❌ | 每页条数，默认 10 |
-| status | string | ❌ | 过滤：`running` / `success` / `failed` |
+| status | string | ❌ | 过滤：`pending` / `running` / `success` / `failed` / `paused` / `cancelled` |
 | sort_by | string | ❌ | 排序字段：`start_time`（默认）/ `end_time` / `task_name` |
 | sort_order | string | ❌ | 排序方向：`desc`（默认）/ `asc` |
 
@@ -1261,11 +1424,13 @@ MongoDB 不支持 SQL 查询，但可以用 `collect_mode: "custom_sql"` 配合 
 
 ---
 
-## 七、FTP 文件采集专项
+## 七、FTP/SFTP 文件采集专项
 
-> FTP 采集引擎支持文件下载、MD5 去重、结构化文件解析入库（CSV/JSON/YAML）。自动兼容明文 FTP 和加密 FTPS。
+> 支持 FTP / FTPS / SFTP / SDTP 四种协议。自动检测 FTPS 加密、流式下载带毫秒级中断探针、MD5 去重、内容哈希幂等写入。支持 CSV / JSON / YAML / Excel / XML 结构化解析入库。
 
-### 1. 创建 FTP 数据源
+### 1. 创建文件数据源
+
+FTP/SFTP 数据源不需要数据库连接，连接信息可在任务中通过 `ftp_url` 覆盖：
 
 ```json
 {
@@ -1282,53 +1447,81 @@ MongoDB 不支持 SQL 查询，但可以用 `collect_mode: "custom_sql"` 配合 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | name | string | ✅ | 数据源别名 |
-| type | string | ✅ | 固定 `"ftp"` |
-| host | string | ✅ | FTP 服务器地址 |
-| port | int | ✅ | FTP 端口，默认 `21` |
-| db_name | string | ✅ | FTP 无数据库概念，随便填 `"/"` |
-| username | string | ❌ | 用户名，不传则匿名登录 |
+| type | string | ✅ | `ftp`（FTP/FTPS/SFTP/SDTP 统一用此类型） |
+| host | string | ✅ | 服务器地址 |
+| port | int | ✅ | 端口：FTP=21，SFTP=22 |
+| db_name | string | ✅ | 占位符，随便填 `"/"` |
+| username | string | ❌ | 用户名 |
 | password | string | ❌ | 密码 |
 
-> 测试连接时自动兼容 FTPS（服务器要求加密时自动切换）。
+> `ftp_url` 中指定协议前缀（`sftp://` / `ftps://` 等），引擎自动适配，无需在数据源 `type` 中区分。
 
 ---
 
-### 2. 创建 FTP 采集任务
+### 2. 创建文件采集任务
 
-#### 方式 A：用 `ftp_url`（推荐，最简洁）
+#### 方式 A：用 `ftp_url`（推荐，支持多协议）
+
+```json
+// FTP
+{"ftp_url": "ftp://admin:123456@192.168.1.100:21/data/calico.yaml"}
+
+// FTPS（自动检测加密）
+{"ftp_url": "ftps://admin:123456@192.168.1.100:21/data/calico.yaml"}
+
+// SFTP（SSH 文件传输）
+{"ftp_url": "sftp://admin:123456@192.168.1.100:22/home/user/data.csv"}
+
+// SDTP（安全网闸，预留）
+{"ftp_url": "sdtp://admin:123456@192.168.1.100/data/report.csv"}
+```
+
+完整请求：
 
 ```json
 {
   "task_name": "采集calico配置",
-  "source_id": "你的FTP数据源ID",
-  "ftp_url": "ftp://admin:123456@192.168.1.100:21/data/calico.yaml",
+  "source_id": "你的数据源ID",
+  "ftp_url": "sftp://admin:123456@192.168.1.100:22/data/calico.yaml",
   "file_parse": 1,
   "collect_mode": "full"
 }
 ```
 
-#### 方式 B：用 `ftp_path`（连接信息从数据源读取）
+> `ftp_url` 的协议前缀决定使用哪种传输协议（`ftp`/`ftps`/`sftp`/`sdtp`），自动解析 host/port/username/password/path 覆盖数据源配置。
+
+#### 方式 B：用 `ftp_path`（连接信息从数据源读取，FTP 默认）
 
 ```json
 {
   "task_name": "采集calico配置",
-  "source_id": "你的FTP数据源ID",
-  "ftp_path": "/data/calico.yaml",
+  "source_id": "你的数据源ID",
+  "ftp_path": "calico.yaml",
   "file_parse": 1,
   "collect_mode": "full"
 }
 ```
+
+> FTP/FTPS 路径去掉前导 `/`（如 `calico.yaml` 而非 `/calico.yaml`）。SFTP/SDTP 保留绝对路径。
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| source_id | string | ✅ | FTP 数据源 ID |
-| ftp_url | string | ❌ | 完整 FTP URL，传了自动解析 host/port/username/password/ftp_path |
-| ftp_path | string | ❌ | 远程文件路径，如 `/data/calico.yaml`。与 `ftp_url` 二选一 |
+| source_id | string | ✅ | 数据源 ID |
+| ftp_url | string | ❌ | 多协议 URL，支持 `ftp://` `ftps://` `sftp://` `sdtp://`，传了自动解析 |
+| ftp_path | string | ❌ | 远程文件路径。FTP/FTPS 去掉前导 `/`；SFTP/SDTP 保留绝对路径。与 `ftp_url` 二选一 |
 | file_parse | int | ❌ | `1`=解析文件内容入库，`0`=只下载不解析，默认 `0` |
-| file_type | string | ❌ | `auto`(自动识别) / `csv` / `json` / `yaml`，默认 `auto` |
+| file_type | string | ❌ | `auto`(自动识别) / `csv` / `json` / `yaml` / `xlsx` / `xml`，默认 `auto` |
 | target_table | string | ❌ | 解析后写入哪张 PG 表，不传则自动用 `ftp_文件名` |
-| ftp_passive | int | ❌ | `1`=被动模式（默认），`0`=主动模式 |
-| collect_mode | string | ❌ | 固定 `"full"` |
+| ftp_passive | int | ❌ | `1`=被动模式（默认），`0`=主动模式。`None` 兜底为被动 |
+
+**核心特性：**
+
+| 特性 | 说明 |
+|------|------|
+| 多协议 | FTP / FTPS(自动检测) / SFTP(paramiko) / SDTP(预留) |
+| 毫秒级中断 | 下载时每 ~400KB 探测一次暂停/取消信号，大文件可瞬间中断 |
+| 幂等写入 | 每行数据的 MD5 哈希作为主键，重复执行 `ON CONFLICT DO NOTHING`，不产生脏数据 |
+| 断点续传 | 暂停时水位线(MD5)保存到 Redis，`/resume` 回写数据库后从断点继续 |
 
 > **注意：** `ftp_url` 和 `ftp_path` 至少传一个。都传时 `ftp_url` 优先。密码含 `@` 等特殊字符时需 URL 编码（如 `p@ss` → `p%40ss`）。
 
@@ -1449,7 +1642,75 @@ metadata:
 
 ---
 
-### 6. 仅下载不解析
+### 6. Excel 文件采集
+
+支持 `.xlsx` / `.xls` 格式，自动读取所有工作表，首行作为列名。
+
+```json
+{
+  "task_name": "采集设备清单Excel",
+  "source_id": "你的FTP数据源ID",
+  "ftp_path": "/data/devices.xlsx",
+  "file_parse": 1,
+  "file_type": "xlsx",
+  "target_table": "ftp_devices"
+}
+```
+
+| Excel 内容 | 存入 raw_doc |
+|------------|-------------|
+| `设备A \| 传感器 \| 正常` | `{"名称":"设备A","类型":"传感器","状态":"正常"}` |
+| `设备B \| 控制器 \| 异常` | `{"名称":"设备B","类型":"控制器","状态":"异常"}` |
+
+> 多工作表时每个工作表独立解析，共享同一个目标表。空单元格转为空字符串 `""`。
+
+---
+
+### 7. XML 文件采集
+
+递归解析 XML 树，整个文档存为一条 JSON 记录。
+
+```json
+{
+  "task_name": "采集XML配置",
+  "source_id": "你的FTP数据源ID",
+  "ftp_path": "/data/config.xml",
+  "file_parse": 1,
+  "file_type": "xml",
+  "target_table": "ftp_config"
+}
+```
+
+**XML 内容示例：**
+
+```xml
+<project name="my-app">
+  <version>1.0.0</version>
+  <database>
+    <host>localhost</host>
+    <port>5432</port>
+  </database>
+</project>
+```
+
+解析后 `raw_doc` 为：
+
+```json
+{
+  "_tag": "project",
+  "name": "my-app",
+  "version": {"_tag": "version", "_text": "1.0.0"},
+  "database": {
+    "_tag": "database",
+    "host": {"_tag": "host", "_text": "localhost"},
+    "port": {"_tag": "port", "_text": "5432"}
+  }
+}
+```
+
+---
+
+### 8. 仅下载不解析（二进制文件）
 
 `file_parse=0`（默认）时，文件只下载到本地，不解析入库。适合二进制文件（图片、PDF 等）。
 
@@ -1466,14 +1727,12 @@ metadata:
 
 ---
 
-### 7. FTPS 加密连接
+### 9. 多协议连接详解
 
-服务器要求加密时自动切换，无需额外配置。前端传参和普通 FTP 完全一样：
+#### FTPS 加密（自动检测）
 
 ```json
 {
-  "task_name": "加密FTP采集",
-  "source_id": "你的FTPS数据源ID",
   "ftp_url": "ftps://admin:123456@192.168.1.100:21/data/report.csv",
   "file_parse": 1,
   "file_type": "csv"
@@ -1482,13 +1741,48 @@ metadata:
 
 > 引擎自动检测：先尝试明文 FTP → 服务器返回 `503 Use AUTH first` → 自动切换 FTPS → 忽略自签证书 → 下载完成。
 
----
-
-### 8. MD5 去重
-
-同一文件重复执行任务时，如果 MD5 未变化，自动跳过：
+#### SFTP（SSH 文件传输）
 
 ```json
+{
+  "ftp_url": "sftp://admin:123456@192.168.1.100:22/home/user/data.csv",
+  "file_parse": 1,
+  "file_type": "csv"
+}
+```
+
+> 基于 `paramiko` SSH 协议，端口默认 `22`。**路径保留绝对路径**（如 `/home/user/data.csv`），不要去掉前导 `/`。
+
+#### SDTP（安全网闸，预留）
+
+```json
+{
+  "ftp_url": "sdtp://admin:123456@192.168.1.100/data/report.csv",
+  "file_parse": 1
+}
+```
+
+> 用于对接隔离网闸的私有 SDK 或命令行工具，当前为预留适配器。
+
+#### 协议对比
+
+| 协议 | 端口 | 路径格式 | 加密 | 依赖 |
+|------|------|----------|------|------|
+| FTP | 21 | 去掉前导 `/` | 明文 | `ftplib`（Python 内置） |
+| FTPS | 21 | 去掉前导 `/` | TLS | `ftplib` + `ssl`（Python 内置） |
+| SFTP | 22 | 保留 `/home/...` | SSH | `paramiko` |
+| SDTP | — | 保留 | 网闸 | 私有 SDK |
+
+---
+
+### 10. MD5 去重与幂等写入
+
+**文件级去重：** 同一文件重复执行时，如果 MD5 未变化，自动跳过下载和解析。
+
+**行级幂等写入：** 每行数据以内容 MD5 哈希作为主键，写入时使用 `ON CONFLICT (id) DO NOTHING`。即使同一文件解析多次，也不会产生重复行。断点续传重跑时，已入库的行自动跳过。
+
+```json
+// 文件未变化
 {
   "status": "skipped",
   "message": "文件 MD5 未变更, 跳过",
@@ -1501,7 +1795,7 @@ metadata:
 
 ---
 
-### 9. 文件记录表 `ftp_file_record`
+### 11. 文件记录表 `ftp_file_record`
 
 每次下载都会记录元数据：
 
@@ -1521,7 +1815,7 @@ metadata:
 
 ---
 
-### 10.深度测试(已通过)
+### 12. 深度测试(已通过)
 
 CSV 流式解析
 
@@ -1607,21 +1901,26 @@ YAML 多文档拆解测试
 
 
 
-### FTP 采集流程
+### 文件采集流程
 
 ```
-1. 查 ftp_file_record 表获取历史记录
-2. 连接 FTP（自动检测 FTP/FTPS）
-3. 下载文件到本地 {项目根}/ftp_files/{task_id}/
-4. 计算 MD5
-5. MD5 去重判断 → 相同则跳过
-6. 保存文件记录到 ftp_file_record
-7. 如果 file_parse=1：
-   - CSV → 流式解析，每行存为 JSON
-   - JSON → 解析数组/对象，每条存为 JSON
-   - YAML → 解析多文档，每条存为 JSON
-   - 写入目标表 (id UUID + raw_doc JSON)
-8. 更新文件记录（is_parsed=1, parsed_rows=N）
+1. 解析 ftp_url 获取协议类型（ftp/ftps/sftp/sdtp）
+2. 查 ftp_file_record 表获取历史 MD5
+3. FileClientFactory 根据协议创建适配器（FTP/FTPS 走 TLS 会话复用补丁，SFTP 走 paramiko）
+4. 连接服务器 + 流式下载到本地 {项目根}/ftp_files/{task_id}/
+   └── 下载过程中每 ~400KB 探测一次暂停/取消信号（毫秒级中断）
+5. 验证文件大小（0字节则报错）
+6. 计算 MD5 → 与历史对比 → 相同则跳过
+7. 保存文件记录到 ftp_file_record
+8. 如果 file_parse=1：
+   - CSV → 流式解析 + 编码探测（UTF-8/GBK）
+   - JSON → 支持数组/单对象
+   - YAML → 支持多文档(---)
+   - Excel → 多工作表，首行列名
+   - XML → 递归转 dict，同名节点收集为列表
+   - 每行以内容 MD5 为主键 → ON CONFLICT DO NOTHING 幂等写入
+   - 目标表结构: id VARCHAR(32) PK + raw_doc JSON
+9. 更新文件记录（is_parsed=1, parsed_rows=N）
 ```
 
 
@@ -2072,4 +2371,400 @@ ORDER BY collected_at DESC;
 | response_size | field | 响应体大小（字节） |
 | error_msg | field | 错误信息 |
 | time | timestamp | InfluxDB 自动生成 |
+
+
+
+---
+
+## 十、SNMP 采集专项
+
+> 基于 pysnmp 7.x 异步 API，支持 v1/v2c/v3 三种版本。性能指标入 InfluxDB，设备表格信息入 PG。
+
+### 1. 创建 SNMP 数据源
+
+连接凭证（v3 密钥等）存入数据源的 `config_json`，不在任务中暴露：
+
+```json
+{
+  "name": "核心交换机",
+  "type": "snmp",
+  "host": "192.168.1.1",
+  "port": 161,
+  "db_name": "default",
+  "username": "",
+  "password": ""
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | ✅ | 数据源别名 |
+| type | string | ✅ | 固定 `"snmp"` |
+| host | string | ✅ | 设备 IP 地址 |
+| port | int | ✅ | SNMP 端口，默认 `161` |
+| db_name | string | ✅ | 随便填 |
+| username | string | ❌ | 配置界面用，SNMP 实际参数在任务中 |
+
+---
+
+### 2. SNMP v2c 采集（最常用）
+
+```json
+{
+  "task_name": "交换机端口流量监控",
+  "source_id": "你的SNMP数据源ID",
+  "snmp_version": "v2c",
+  "snmp_community": "public",
+  "snmp_extract_mode": "both",
+  "snmp_metric_oids": {
+    "cpu_usage": "1.3.6.1.4.1.2021.11.11.0",
+    "mem_total": "1.3.6.1.4.1.2021.4.5.0",
+    "mem_free": "1.3.6.1.4.1.2021.4.11.0"
+  },
+  "snmp_table_oids": {
+    "ifDescr": "1.3.6.1.2.1.2.2.1.2",
+    "ifInOctets": "1.3.6.1.2.1.2.2.1.10",
+    "ifOutOctets": "1.3.6.1.2.1.2.2.1.16"
+  },
+  "target_table": "snmp_interfaces",
+  "schedule_type": "interval_min",
+  "schedule_value": "5",
+  "collect_mode": "full"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| source_id | string | ✅ | SNMP 数据源 ID |
+| snmp_version | string | ❌ | `v1` / `v2c`（默认）/ `v3` |
+| snmp_community | string | ❌ | v1/v2c 团体字，默认 `"public"` |
+| snmp_extract_mode | string | ❌ | `metric`(指标→InfluxDB) / `info`(表格→PG) / `both`(都要)，默认 `both` |
+| snmp_metric_oids | object | ❌ | 性能指标 OID 映射，格式 `{"字段名":"OID"}` |
+| snmp_table_oids | object | ❌ | 表格列 OID 映射，格式 `{"列名":"基础OID"}` |
+| target_table | string | ❌ | PG 目标表名，不传默认 `snmp_info` |
+| schedule_type | string | ❌ | 推荐 `interval_min` 做定时采集 |
+| schedule_value | string | ❌ | 配合 schedule_type |
+
+**snmp_metric_oids 说明：** 对每个 OID 执行 `GET`，取一个标量值。适合 CPU、内存、温度等。值自动转为 float，失败时为 `None`。
+
+**snmp_table_oids 说明：** 对每个基础 OID 执行 `WALK`，按索引后缀聚合成行。适合接口流量表、ARP 表等。OID 后缀相同的值归入同一行。
+
+**响应示例：**
+
+```
+WALK ifDescr  → {"1": "eth0", "2": "eth1"}
+WALK ifInOctets → {"1": 1234567, "2": 8901234}
+
+聚合成行：
+  {"_index": "1", "ifDescr": "eth0", "ifInOctets": 1234567}
+  {"_index": "2", "ifDescr": "eth1", "ifInOctets": 8901234}
+→ 每行以内容 MD5 为主键，ON CONFLICT DO NOTHING 幂等写入 PG
+```
+
+---
+
+### 3. SNMP v3 采集（加密认证）
+
+```json
+{
+  "task_name": "核心路由器v3监控",
+  "source_id": "你的SNMP数据源ID",
+  "snmp_version": "v3",
+  "snmp_user": "admin",
+  "snmp_auth_key": "auth_password123",
+  "snmp_priv_key": "priv_password456",
+  "snmp_auth_protocol": "SHA",
+  "snmp_priv_protocol": "AES",
+  "snmp_extract_mode": "metric",
+  "snmp_metric_oids": {
+    "sys_uptime": "1.3.6.1.2.1.1.3.0",
+    "cpu_5s": "1.3.6.1.4.1.2021.10.1.3.1"
+  },
+  "schedule_type": "interval_min",
+  "schedule_value": "1"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| snmp_version | string | ✅ | 固定 `"v3"` |
+| snmp_user | string | ✅ | v3 用户名 |
+| snmp_auth_key | string | ❌ | 认证密码（不传 = 无认证） |
+| snmp_priv_key | string | ❌ | 加密密码（不传 = 无加密） |
+| snmp_auth_protocol | string | ❌ | 认证协议：`MD5` / `SHA`（默认） |
+| snmp_priv_protocol | string | ❌ | 加密协议：`DES` / `AES`（默认） |
+
+> v3 凭证字段仅存在于 `DBSyncReq` 内部流转，不出现在 `TaskOut` 返回值中。
+
+---
+
+### 4. 仅采集表格（info 模式）
+
+```json
+{
+  "task_name": "ARP表快照",
+  "source_id": "你的SNMP数据源ID",
+  "snmp_version": "v2c",
+  "snmp_community": "public",
+  "snmp_extract_mode": "info",
+  "snmp_table_oids": {
+    "ipNetToMediaIfIndex": "1.3.6.1.2.1.4.22.1.1",
+    "ipNetToMediaPhysAddress": "1.3.6.1.2.1.4.22.1.2",
+    "ipNetToMediaNetAddress": "1.3.6.1.2.1.4.22.1.3",
+    "ipNetToMediaType": "1.3.6.1.2.1.4.22.1.4"
+  },
+  "target_table": "snmp_arp_table",
+  "collect_mode": "full"
+}
+```
+
+> `info` 模式只做 WALK → 聚合 → 写入 PG，不写 InfluxDB。适合定期快照。
+
+---
+
+### 5. 仅采集指标（metric 模式）
+
+```json
+{
+  "task_name": "设备健康心跳",
+  "source_id": "你的SNMP数据源ID",
+  "snmp_extract_mode": "metric",
+  "snmp_metric_oids": {
+    "cpu": "1.3.6.1.4.1.2021.11.11.0",
+    "mem_used": "1.3.6.1.4.1.2021.4.6.0",
+    "temp": "1.3.6.1.4.1.2021.13.16.2.1.3.1"
+  },
+  "schedule_type": "interval_min",
+  "schedule_value": "1"
+}
+```
+
+> `metric` 模式只做 GET → 写入 InfluxDB，不入 PG。适合高频监控（每秒/每分钟）。
+
+---
+
+### 6. 深度测试
+
+创建一个 SNMP 数据源
+
+```json
+{
+  "name": "本地虚拟交换机",
+  "type": "snmp",
+  "host": "127.0.0.1",
+  "port": 1161,
+  "db_name": "public",
+  "username": "",
+  "password": ""
+}
+```
+
+创建并测试 SNMP 双写采集任务
+
+```json
+{
+  "task_name": "深度测试-SNMP双引擎采集",
+  "source_id": "【数据源 ID】",
+  "snmp_version": "v2c",
+  "snmp_community": "public",
+  "snmp_extract_mode": "both",
+  
+  "snmp_metric_oids": {
+    "sys_name": "1.3.6.1.2.1.1.5.0",
+    "sys_uptime": "1.3.6.1.2.1.1.3.0",
+    "if_in_octets": "1.3.6.1.2.1.2.2.1.10.1"
+  },
+  
+  "snmp_table_oids": {
+    "sys_info_tree": "1.3.6.1.2.1.1"
+  },
+  
+  "target_table": "snmp_test_info",
+  "collect_mode": "full",
+  "sync_mode": "insert",
+  "status": 1
+}
+```
+
+
+
+## 十一、Socket 采集专项
+
+> 原生 TCP/UDP Socket 主动请求-响应模式。支持文本指令和十六进制二进制协议。监控入 InfluxDB，数据入 PG。
+
+### 1. 创建 Socket 数据源
+
+```json
+{
+  "name": "工控设备TCP",
+  "type": "socket",
+  "host": "192.168.1.50",
+  "port": 502,
+  "db_name": "default",
+  "username": "",
+  "password": ""
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | ✅ | 数据源别名 |
+| type | string | ✅ | 固定 `"socket"` |
+| host | string | ✅ | 目标主机 IP |
+| port | int | ✅ | 目标端口 |
+| db_name | string | ✅ | 随便填 |
+
+---
+
+### 2. TCP 文本协议（JSON 响应）
+
+```json
+{
+  "task_name": "TCP设备状态查询",
+  "source_id": "你的Socket数据源ID",
+  "socket_protocol": "tcp",
+  "socket_command": "{\"cmd\":\"get_status\"}\n",
+  "socket_command_encoding": "utf-8",
+  "socket_timeout": 5,
+  "socket_recv_size": 4096,
+  "socket_terminator": "\n",
+  "socket_response_format": "json",
+  "target_table": "socket_status",
+  "schedule_type": "interval_min",
+  "schedule_value": "1",
+  "collect_mode": "full"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| source_id | string | ✅ | Socket 数据源 ID |
+| socket_protocol | string | ❌ | `tcp`（默认）/ `udp` |
+| socket_command | string | ❌ | 发送的指令内容 |
+| socket_command_encoding | string | ❌ | 指令编码：`utf-8`（默认）/ `hex` |
+| socket_timeout | int | ❌ | 超时秒数，默认 `10` |
+| socket_recv_size | int | ❌ | 接收缓冲区大小，默认 `4096` |
+| socket_terminator | string | ❌ | 响应结束符，如 `\n`。不填则读到一次数据即完成 |
+| socket_response_format | string | ❌ | 响应解析格式：`json`（默认）/ `text` / `hex` |
+| target_table | string | ❌ | PG 目标表名，不传默认 `socket_data` |
+
+**TCP 接收逻辑：**
+- 配置了 `socket_terminator` → 持续接收直到读到终止符或超时
+- 未配置 `socket_terminator` → 收到一次数据即完成
+
+---
+
+### 3. 二进制协议（十六进制指令）
+
+工控设备常用 Modbus 等二进制协议：
+
+```json
+{
+  "task_name": "Modbus读取",
+  "source_id": "你的Socket数据源ID",
+  "socket_protocol": "tcp",
+  "socket_command": "00 01 00 00 00 06 01 03 00 00 00 0A",
+  "socket_command_encoding": "hex",
+  "socket_timeout": 3,
+  "socket_response_format": "hex",
+  "target_table": "modbus_data",
+  "schedule_type": "interval_min",
+  "schedule_value": "10"
+}
+```
+
+| socket_command_encoding | socket_command | 发送内容 |
+|------------------------|---------------|----------|
+| `utf-8`（默认） | `"hello\n"` | 4 字节 `hello\n` |
+| `hex` | `"00 01 02 0A"` 或 `"0001020A"` | 4 字节 `\x00\x01\x02\x0A` |
+
+**`socket_response_format` 三种模式：**
+
+| 值 | 解析行为 | 存入 raw_doc |
+|----|---------|-------------|
+| `json`（默认） | `json.loads(text)` | 解析后的 dict/list |
+| `text` | 直接存为字符串 | `{"raw_text":"响应内容..."}` |
+| `hex` | 十六进制显示 | `{"raw_hex":"00ffa1b2..."}` |
+
+---
+
+### 4. UDP 请求
+
+```json
+{
+  "task_name": "UDP设备探测",
+  "source_id": "你的Socket数据源ID",
+  "socket_protocol": "udp",
+  "socket_command": "ping",
+  "socket_command_encoding": "utf-8",
+  "socket_timeout": 3,
+  "socket_response_format": "text",
+  "schedule_type": "interval_min",
+  "schedule_value": "1"
+}
+```
+
+> UDP 模式下 `sendto` + `recvfrom`，一次性接收，不支持终止符。
+
+---
+
+### 5. socket_response_format 示例
+
+| 设备响应内容 | socket_response_format | 存入 raw_doc |
+|-------------|----------------------|-------------|
+| `{"temp":25.5,"status":"ok"}` | `json` | `{"temp":25.5,"status":"ok"}` |
+| `OK\r\n` | `text` | `{"raw_text":"OK\r\n"}` |
+| `\x00\x01\xA0\xFF` | `hex` | `{"raw_hex":"0001a0ff"}` |
+| `not valid json` | `json` → 降级 | `{"raw_text":"not valid json"}` |
+
+---
+
+### 6. 深度测试
+
+创建一个 Socket 数据源
+
+```json
+{
+  "name": "本地模拟传感器-9999",
+  "type": "socket",
+  "host": "127.0.0.1",
+  "port": 9999,
+  "db_name": "device_01",
+  "username": "",
+  "password": ""
+}
+```
+
+创建并测试 Socket 采集任务
+
+```json
+{
+  "task_name": "深度测试-Socket模拟接收",
+  "source_id": "【数据源 ID】",
+  "socket_protocol": "tcp",
+  "socket_timeout": 5,
+  "socket_recv_size": 1024,
+  "socket_terminator": "\n",
+  "socket_response_format": "json",
+  "api_extract_mode": "both",
+  
+  "target_table": "socket_test_data",
+  "collect_mode": "full",
+  "sync_mode": "insert",
+  "status": 1
+}
+```
+
+
+
+### 7. SNMP/Socket 通用说明
+
+| 特性 | SNMP | Socket |
+|------|------|--------|
+| 默认端口 | 161 | 无默认，必须配置 |
+| 监控写入 | InfluxDB `snmp_monitor` | InfluxDB `socket_monitor` |
+| 数据写入 | PG（`id` + `raw_doc` + `collected_at`） | PG（`id` + `raw_doc` + `collected_at`） |
+| 幂等 | 内容哈希 + ON CONFLICT DO NOTHING | 内容哈希 + ON CONFLICT DO NOTHING |
+| 暂停/取消 | 支持 | 支持 |
+| 定时调度 | 推荐 `interval_min` | 推荐 `interval_min` |
 
