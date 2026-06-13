@@ -1,7 +1,7 @@
 [project]
 name = "dataflux"
-version = "0.1.0"
-description = "数据中台"
+version = "1.0.0"
+description = "数据采集平台"
 readme = "README.md"
 requires-python = ">=3.12, <3.14"
 dependencies = [
@@ -36,4 +36,9 @@ dependencies = [
     "requests>=2.34.2",
     "httpx>=0.28.1",
     "openpyxl>=3.1.0",
+    "paramiko>=3.4.0",
+    "pysnmp>=7.1.27",
+    "snmpsim>=1.2.2",
+    "pysmi>=2.0.0",
+    "ply>=3.11",
 ]
