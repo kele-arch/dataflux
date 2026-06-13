@@ -75,5 +75,26 @@ class CollectTask(Base, BaseModelMixin):
     api_extract_mode: Mapped[str] = mapped_column(String(10), default="both", comment="data/monitor/both")
     api_data_path: Mapped[str | None] = mapped_column(String(500), nullable=True, comment="响应体中业务数据的路径")
 
+    # SNMP 采集配置
+    snmp_version: Mapped[str] = mapped_column(String(10), default="v2c", comment="v1/v2c/v3")
+    snmp_community: Mapped[str] = mapped_column(String(50), default="public", comment="v1/v2c团体字")
+    snmp_user: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="v3用户名")
+    snmp_auth_key: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="v3认证密码")
+    snmp_priv_key: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="v3加密密码")
+    snmp_auth_protocol: Mapped[str] = mapped_column(String(10), default="SHA", comment="v3认证协议")
+    snmp_priv_protocol: Mapped[str] = mapped_column(String(10), default="AES", comment="v3加密协议")
+    snmp_extract_mode: Mapped[str] = mapped_column(String(10), default="both", comment="metric/info/both")
+    snmp_metric_oids: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="指标OID映射")
+    snmp_table_oids: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="表格OID映射")
+
+    # Socket 采集配置
+    socket_protocol: Mapped[str] = mapped_column(String(10), default="tcp", comment="tcp/udp")
+    socket_command: Mapped[str | None] = mapped_column(Text, nullable=True, comment="发送指令")
+    socket_command_encoding: Mapped[str] = mapped_column(String(10), default="utf-8", comment="编码")
+    socket_timeout: Mapped[int] = mapped_column(Integer, default=10, comment="超时秒数")
+    socket_recv_size: Mapped[int] = mapped_column(Integer, default=4096, comment="缓冲区大小")
+    socket_terminator: Mapped[str | None] = mapped_column(String(20), nullable=True, comment="结束符")
+    socket_response_format: Mapped[str] = mapped_column(String(10), default="json", comment="响应格式")
+
     def __repr__(self) -> str:
         return f"<CollectTask(task_name={self.task_name}, status={self.status})>"
