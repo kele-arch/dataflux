@@ -39,6 +39,9 @@ def test_db_connection(req: DataSourceBase):
         if req.type.lower() == "api":
             return BaseResponse(code=0, msg="接口采集不需要测试连接，请在任务中配置 api_url 后直接执行")
 
+        if req.type.lower() in ("snmp", "socket"):
+            return BaseResponse(code=0, msg="SNMP/Socket 采集不需要测试连接，请在任务中配置相关参数后直接执行")
+
         if req.type.lower() == "ftp":
             from ftplib import FTP, FTP_TLS, error_perm
             ftp = FTP()
@@ -126,6 +129,9 @@ def get_datasource_tables(req: DataSourceIdReq, db: Session = Depends(get_db)):
         if source.type.lower() == "api":
             return BaseResponse(code=0, msg="接口采集不支持表查询")
 
+        if source.type.lower() in ("snmp", "socket"):
+            return BaseResponse(code=0, msg="SNMP/Socket 采集不支持表查询")
+
         if source.type.lower() == "ftp":
             return BaseResponse(code=0, msg="FTP 数据源不支持表查询，请在任务中配置 ftp_path")
 
@@ -158,6 +164,9 @@ def get_datasource_tables_detail(req: DataSourceIdReq, db: Session = Depends(get
 
         if source.type.lower() == "api":
             return BaseResponse(code=0, msg="接口采集不支持表结构查询")
+
+        if source.type.lower() in ("snmp", "socket"):
+            return BaseResponse(code=0, msg="SNMP/Socket 采集不支持表结构查询")
 
         if source.type.lower() == "ftp":
             return BaseResponse(code=0, msg="FTP 数据源不支持表结构查询")

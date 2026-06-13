@@ -13,7 +13,7 @@ from app.schemas.base import BaseDecryptReq
 class DataSourceBase(BaseDecryptReq):
     name: str = Field(..., description="数据源名称，如：产线A_MySQL")
     # type: str = Field(..., description="数据源类型：mysql, postgresql")
-    type: Literal["mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api"] = Field(..., description="数据库类型")
+    type: Literal["mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket"] = Field(..., description="数据库类型")
     host: str = Field(..., description="主机地址")
     port: int = Field(..., description="端口")
     db_name: str = Field(..., description="数据库名")
