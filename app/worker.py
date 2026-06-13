@@ -104,7 +104,28 @@ async def run_sync_job(ctx, task_id: str):
             api_headers=task.api_headers,
             api_body=task.api_body,
             api_extract_mode=task.api_extract_mode,
-            api_data_path=task.api_data_path
+            api_data_path=task.api_data_path,
+
+            # snmp
+            snmp_version=task.snmp_version,
+            snmp_community=task.snmp_community,
+            snmp_user=task.snmp_user,
+            snmp_auth_key=task.snmp_auth_key,
+            snmp_priv_key=task.snmp_priv_key,
+            snmp_auth_protocol=task.snmp_auth_protocol,
+            snmp_priv_protocol=task.snmp_priv_protocol,
+            snmp_extract_mode=task.snmp_extract_mode,
+            snmp_metric_oids=task.snmp_metric_oids,
+            snmp_table_oids=task.snmp_table_oids,
+
+            # socket
+            socket_protocol=task.socket_protocol,
+            socket_command=task.socket_command,
+            socket_command_encoding=task.socket_command_encoding,
+            socket_timeout=task.socket_timeout,
+            socket_recv_size=task.socket_recv_size,
+            socket_terminator=task.socket_terminator,
+            socket_response_format=task.socket_response_format
         )
 
         # 查找 /run 接口提前写入的 pending 日志并更新为 running
