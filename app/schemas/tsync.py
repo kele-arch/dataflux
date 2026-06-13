@@ -29,7 +29,8 @@ class DBSyncReq(BaseDecryptReq):
     # 对外接口无影响，仅供后台 Worker 和 Engine 流转使用
     task_id: Optional[str] = Field(default=None, description="任务唯一标识(内部流转专用)")
 
-    db_type: Literal["mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api"] = Field(..., description="数据库类型")
+    db_type: Literal["mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket"] = Field(...,
+                                                                                                               description="数据库类型")
     host: str = Field(..., description="主机地址 IP")
     port: int = Field(..., description="端口")
     username: str = Field(..., description="用户名")
@@ -81,7 +82,8 @@ class DBSyncReq(BaseDecryptReq):
     # target_db_name: Optional[str] = None
 
     # FTP配置参数
-    ftp_url: Optional[str] = Field(default=None, description="FTP完整URL,如 ftp://admin:123456@127.0.0.1:21/data/file.yaml, 传了则自动解析覆盖host/port/username/password/ftp_path")
+    ftp_url: Optional[str] = Field(default=None,
+                                   description="FTP完整URL,如 ftp://admin:123456@127.0.0.1:21/data/file.yaml, 传了则自动解析覆盖host/port/username/password/ftp_path")
     ftp_url_scheme: Optional[str] = Field(default=None, description="内部流转: URL解析出的协议类型(ftp/ftps/sftp/sdtp)")
     ftp_path: Optional[str] = Field(default=None, description="FTP远程文件路径,如 /data/calico.yaml")
     ftp_passive: int = Field(default=1, description="是否使用FTP被动模式(1是 0否)")
@@ -102,6 +104,37 @@ class DBSyncReq(BaseDecryptReq):
     )
     api_data_path: Optional[str] = Field(
         default=None, description="响应体中业务数据的路径，如 data.list 或 $.data.list"
+    )
+
+    # SNMP 专用
+    snmp_version: Optional[Literal["v1", "v2c", "v3"]] = Field(default="v2c", description="SNMP版本")
+    snmp_community: Optional[str] = Field(default="public", description="v1/v2c 团体字")
+    # v3 专用
+    snmp_user: Optional[str] = Field(default=None, description="v3用户名")
+    snmp_auth_key: Optional[str] = Field(default=None, description="v3认证密码")
+    snmp_priv_key: Optional[str] = Field(default=None, description="v3加密密码")
+    snmp_auth_protocol: Optional[str] = Field(default="SHA", description="v3认证协议: MD5/SHA")
+    snmp_priv_protocol: Optional[str] = Field(default="AES", description="v3加密协议: DES/AES")
+
+    snmp_extract_mode: Optional[Literal["metric", "info", "both"]] = Field(
+        default="both", description="metric=指标入InfluxDB, info=表格入PG, both=都要"
+    )
+    # metric模式: {字段名: OID}，每个OID取一个标量值
+    snmp_metric_oids: Optional[dict] = Field(default=None, description="性能指标OID映射，如 {'cpu':'1.3.6.1.4.1.x'}")
+    # info模式: {字段名: 基础OID}，对每个基础OID做WALK，按索引号聚合成行
+    snmp_table_oids: Optional[dict] = Field(default=None,
+                                            description="表格列OID映射，如 {'ifDescr':'1.3.6.1.2.1.2.2.1.2'}")
+
+    # Socket 专用
+    socket_protocol: Optional[Literal["tcp", "udp"]] = Field(default="tcp", description="传输层协议")
+    socket_command: Optional[str] = Field(default=None, description="发送的指令内容")
+    socket_command_encoding: Optional[str] = Field(default="utf-8", description="指令编码，二进制协议可用 hex")
+    socket_timeout: Optional[int] = Field(default=10, description="超时秒数")
+    socket_recv_size: Optional[int] = Field(default=4096, description="单次接收缓冲区大小")
+    socket_terminator: Optional[str] = Field(default=None,
+                                             description="响应结束符，如 '\\n'，不填则一次性recv后判断超时结束")
+    socket_response_format: Optional[Literal["json", "text", "hex"]] = Field(
+        default="json", description="响应解析格式"
     )
 
 
@@ -135,11 +168,13 @@ class TaskCreateReq(BaseDecryptReq):
     target_db_name: Optional[str] = Field(default=None, description="目标库名")
 
     # FTP 采集配置
-    ftp_url: Optional[str] = Field(default=None, description="FTP完整URL,如 ftp://admin:123456@127.0.0.1:21/data/file.yaml, 传了自动解析覆盖连接参数")
+    ftp_url: Optional[str] = Field(default=None,
+                                   description="FTP完整URL,如 ftp://admin:123456@127.0.0.1:21/data/file.yaml, 传了自动解析覆盖连接参数")
     ftp_path: Optional[str] = Field(default=None, description="FTP远程文件路径,如 /data/report.csv")
     ftp_passive: int = Field(default=1, description="是否使用FTP被动模式(1是 0否)")
     file_parse: int = Field(default=0, description="是否解析结构化文件内容入库(1是 0否)")
-    file_type: Optional[Literal["csv", "json", "yaml", "xlsx", "xml", "auto"]] = Field(default="auto", description="文件类型:auto自动识别")
+    file_type: Optional[Literal["csv", "json", "yaml", "xlsx", "xml", "auto"]] = Field(default="auto",
+                                                                                       description="文件类型:auto自动识别")
 
     # 接口采集配置
     api_url: Optional[str] = Field(default=None, description="接口完整URL")
@@ -148,6 +183,22 @@ class TaskCreateReq(BaseDecryptReq):
     api_body: Optional[dict] = Field(default=None, description="请求体或查询参数")
     api_extract_mode: Optional[Literal["data", "monitor", "both"]] = Field(default="both")
     api_data_path: Optional[str] = Field(default=None, description="响应体中业务数据的路径,如 data.list")
+
+    # SNMP 采集配置
+    snmp_version: Optional[str] = Field(default="v2c", description="SNMP版本: v1/v2c/v3")
+    snmp_community: Optional[str] = Field(default="public", description="v1/v2c团体字")
+    snmp_extract_mode: Optional[str] = Field(default="both", description="metric/info/both")
+    snmp_metric_oids: Optional[dict] = Field(default=None, description="性能指标OID映射")
+    snmp_table_oids: Optional[dict] = Field(default=None, description="表格列OID映射")
+
+    # Socket 采集配置
+    socket_protocol: Optional[str] = Field(default="tcp", description="tcp/udp")
+    socket_command: Optional[str] = Field(default=None, description="发送的指令内容")
+    socket_command_encoding: Optional[str] = Field(default="utf-8", description="指令编码,如 utf-8 或 hex")
+    socket_timeout: Optional[int] = Field(default=10, description="单次请求超时秒数")
+    socket_recv_size: Optional[int] = Field(default=4096, description="接收缓冲区大小")
+    socket_terminator: Optional[str] = Field(default=None, description="响应结束符,如 '\\n'")
+    socket_response_format: Optional[str] = Field(default="json", description="json/text/hex")
 
 
 class TaskUpdateReq(TaskCreateReq):
@@ -170,7 +221,8 @@ class TaskPageQueryReq(BaseDecryptReq):
     size: int = Field(default=10, ge=1)
     task_name: Optional[str] = Field(default=None, description="按任务名模糊搜索")
     collect_mode: Optional[str] = Field(default=None, description="按采集模式过滤")
-    sort_by: Optional[Literal["create_time", "update_time", "task_name"]] = Field(default="create_time", description="排序字段")
+    sort_by: Optional[Literal["create_time", "update_time", "task_name"]] = Field(default="create_time",
+                                                                                  description="排序字段")
     sort_order: Optional[Literal["asc", "desc"]] = Field(default="desc", description="排序方向")
 
 
@@ -206,6 +258,18 @@ class TaskOut(BaseModel):
     api_method: Optional[str] = "POST"
     api_extract_mode: Optional[str] = "both"
     api_data_path: Optional[str] = None
+    snmp_version: Optional[str] = "v2c"
+    snmp_community: Optional[str] = "public"
+    snmp_extract_mode: Optional[str] = "both"
+    snmp_metric_oids: Optional[dict] = None
+    snmp_table_oids: Optional[dict] = None
+    socket_protocol: Optional[str] = "tcp"
+    socket_command: Optional[str] = None
+    socket_command_encoding: Optional[str] = "utf-8"
+    socket_timeout: Optional[int] = 10
+    socket_recv_size: Optional[int] = 4096
+    socket_terminator: Optional[str] = None
+    socket_response_format: Optional[str] = "json"
 
     model_config = ConfigDict(from_attributes=True)
 
