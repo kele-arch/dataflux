@@ -10,6 +10,7 @@ from .mysql import MySQLHandler
 from .oracle_dialect import OracleDialectHandler
 from .postgres import PostgreSQLHandler
 from .dm import DMHandler
+from .sqlite_dialect import SQLiteDialectHandler
 from .sqlserver_dialect import SqlServerDialectHandler
 
 
@@ -26,5 +27,7 @@ def get_dialect_handler(db_type: str):
         return OracleDialectHandler()
     elif db_type == "sqlserver":
         return SqlServerDialectHandler()
+    elif db_type == "sqlite":
+        return SQLiteDialectHandler()
     else:
         raise ValueError(f"暂不支持的方言清洗器: {db_type}")
