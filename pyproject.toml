@@ -42,4 +42,5 @@ dependencies = [
     "pysmi>=2.0.0",
     "ply>=3.11",
     "aiokafka>=0.14.0",
+    "oracledb>=4.0.1",
 ]
