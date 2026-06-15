@@ -62,8 +62,8 @@ def test_db_connection(req: DataSourceBase):
 
         url = build_db_url(req)
 
-        # dmPython 不支持 connect_args 超时参数, 不传
-        if req.type.lower() == "dm":
+        # dmPython / SQLite 不支持 connect_args 超时参数, 不传
+        if req.type.lower() in ("dm", "sqlite"):
             engine = create_engine(url)
         else:
             engine = create_engine(url, connect_args={"connect_timeout": 3})
@@ -136,7 +136,7 @@ def get_datasource_tables(req: DataSourceIdReq, db: Session = Depends(get_db)):
             return BaseResponse(code=0, msg="FTP 数据源不支持表查询，请在任务中配置 ftp_path")
 
         url = build_db_url(source)
-        engine = create_engine(url) if source.type.lower() == "dm" else create_engine(url, connect_args={
+        engine = create_engine(url) if source.type.lower() in ("dm", "sqlite") else create_engine(url, connect_args={
             "connect_timeout": 3})
         try:
             inspector = inspect(engine)
@@ -172,7 +172,7 @@ def get_datasource_tables_detail(req: DataSourceIdReq, db: Session = Depends(get
             return BaseResponse(code=0, msg="FTP 数据源不支持表结构查询")
 
         url = build_db_url(source)
-        engine = create_engine(url) if source.type.lower() == "dm" else create_engine(url, connect_args={
+        engine = create_engine(url) if source.type.lower() in ("dm", "sqlite") else create_engine(url, connect_args={
             "connect_timeout": 3})
         try:
             inspector = inspect(engine)
