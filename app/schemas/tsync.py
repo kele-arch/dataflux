@@ -29,7 +29,7 @@ class DBSyncReq(BaseDecryptReq):
     # 对外接口无影响，仅供后台 Worker 和 Engine 流转使用
     task_id: Optional[str] = Field(default=None, description="任务唯一标识(内部流转专用)")
 
-    db_type: Literal["mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket"] = Field(...,
+    db_type: Literal["mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket", "kafka"] = Field(...,
                                                                                                                description="数据库类型")
     host: str = Field(..., description="主机地址 IP")
     port: int = Field(..., description="端口")
@@ -81,7 +81,7 @@ class DBSyncReq(BaseDecryptReq):
     # target_password: Optional[str] = None
     # target_db_name: Optional[str] = None
 
-    # FTP配置参数
+    # ---- FTP配置参数 ----
     ftp_url: Optional[str] = Field(default=None,
                                    description="FTP完整URL,如 ftp://admin:123456@127.0.0.1:21/data/file.yaml, 传了则自动解析覆盖host/port/username/password/ftp_path")
     ftp_url_scheme: Optional[str] = Field(default=None, description="内部流转: URL解析出的协议类型(ftp/ftps/sftp/sdtp)")
@@ -94,7 +94,7 @@ class DBSyncReq(BaseDecryptReq):
         description="文件类型，auto则根据扩展名自动判断"
     )
 
-    # 接口采集专用
+    # ---- 接口采集专用 ----
     api_url: Optional[str] = Field(default=None, description="接口完整URL")
     api_method: Optional[str] = Field(default="POST", description="请求方法: GET/POST/PUT")
     api_headers: Optional[dict] = Field(default=None, description="请求头")
@@ -106,7 +106,7 @@ class DBSyncReq(BaseDecryptReq):
         default=None, description="响应体中业务数据的路径，如 data.list 或 $.data.list"
     )
 
-    # SNMP 专用
+    # ---- SNMP 专用 ----
     snmp_version: Optional[Literal["v1", "v2c", "v3"]] = Field(default="v2c", description="SNMP版本")
     snmp_community: Optional[str] = Field(default="public", description="v1/v2c 团体字")
     # v3 专用
@@ -125,7 +125,7 @@ class DBSyncReq(BaseDecryptReq):
     snmp_table_oids: Optional[dict] = Field(default=None,
                                             description="表格列OID映射，如 {'ifDescr':'1.3.6.1.2.1.2.2.1.2'}")
 
-    # Socket 专用
+    # ---- Socket 专用 ----
     socket_protocol: Optional[Literal["tcp", "udp"]] = Field(default="tcp", description="传输层协议")
     socket_command: Optional[str] = Field(default=None, description="发送的指令内容")
     socket_command_encoding: Optional[str] = Field(default="utf-8", description="指令编码，二进制协议可用 hex")
@@ -136,6 +136,16 @@ class DBSyncReq(BaseDecryptReq):
     socket_response_format: Optional[Literal["json", "text", "hex"]] = Field(
         default="json", description="响应解析格式"
     )
+    # ---- Kafka 专用 ----
+    kafka_bootstrap_servers: Optional[str] = Field(default=None, description="Kafka地址，如 127.0.0.1:9092")
+    kafka_topic: Optional[str] = Field(default=None, description="订阅的Topic")
+    kafka_group_id: Optional[str] = Field(default=None, description="消费组ID，不填则自动用 task_id")
+    kafka_auto_offset_reset: Optional[Literal["earliest", "latest"]] = Field(
+        default="latest", description="首次消费时的起始位置"
+    )
+    kafka_batch_size: Optional[int] = Field(default=500, description="攒批大小，满批或超时则写入一次")
+    kafka_batch_timeout_ms: Optional[int] = Field(default=5000, description="攒批超时毫秒数")
+    kafka_value_format: Optional[Literal["json", "text"]] = Field(default="json", description="消息体解析格式")
 
 
 # region ---- 任务管理 ----
@@ -199,6 +209,15 @@ class TaskCreateReq(BaseDecryptReq):
     socket_recv_size: Optional[int] = Field(default=4096, description="接收缓冲区大小")
     socket_terminator: Optional[str] = Field(default=None, description="响应结束符,如 '\\n'")
     socket_response_format: Optional[str] = Field(default="json", description="json/text/hex")
+
+    # Kafka 采集配置
+    kafka_bootstrap_servers: Optional[str] = Field(default=None, description="Kafka地址,如 127.0.0.1:9092")
+    kafka_topic: Optional[str] = Field(default=None, description="订阅的Topic")
+    kafka_group_id: Optional[str] = Field(default=None, description="消费组ID,不填自动用task_id")
+    kafka_auto_offset_reset: Optional[str] = Field(default="latest", description="earliest/latest")
+    kafka_batch_size: Optional[int] = Field(default=500, description="攒批大小")
+    kafka_batch_timeout_ms: Optional[int] = Field(default=5000, description="攒批超时毫秒")
+    kafka_value_format: Optional[str] = Field(default="json", description="json/text")
 
 
 class TaskUpdateReq(TaskCreateReq):
@@ -270,6 +289,13 @@ class TaskOut(BaseModel):
     socket_recv_size: Optional[int] = 4096
     socket_terminator: Optional[str] = None
     socket_response_format: Optional[str] = "json"
+    kafka_bootstrap_servers: Optional[str] = None
+    kafka_topic: Optional[str] = None
+    kafka_group_id: Optional[str] = None
+    kafka_auto_offset_reset: Optional[str] = "latest"
+    kafka_batch_size: Optional[int] = 500
+    kafka_batch_timeout_ms: Optional[int] = 5000
+    kafka_value_format: Optional[str] = "json"
 
     model_config = ConfigDict(from_attributes=True)
 

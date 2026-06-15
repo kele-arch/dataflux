@@ -14,10 +14,12 @@ from sqlalchemy.orm import Session
 from app.core import arq_pool as arq_module
 from app.crud.crud_tsync import crud_task
 from app.models.collectTaskModel import CollectTask
+from app.models.dataSourceModel import DataSource
 from app.models.taskLogModel import TaskLog
 from app.schemas.tsync import DBSyncReq, TaskIdReq, TaskUpdateReq, TaskCreateReq, TaskPageQueryReq, TaskPageOut, \
     TaskOut, DashboardOut, TaskStatusReq
 from app.schemas.response import BaseResponse
+from app.services.kafka_manager import kafka_manager, _build_kafka_req
 from app.services.sync_service import sync_database_architecture_and_data, DatabaseSyncEngine
 from app.com.decorators import measure_time
 from app.db.session import get_db
@@ -256,4 +258,34 @@ def get_task_detail(req: TaskIdReq, db: Session = Depends(get_db)):
 def get_dashboard_stats(db: Session = Depends(get_db)):
     data = crud_task.get_dashboard_data(db)
     return BaseResponse(data=data, msg="获取成功")
+
+
+# endregion
+
+
+# region ---- 专属 Kafka 接口 ----
+@router.post("/kafka/start", summary="启动Kafka常驻消费", response_model=BaseResponse)
+async def kafka_start(req: TaskIdReq, db: Session = Depends(get_db)):
+    task = crud_task.get_by_id(db, req.task_id)
+    if not task:
+        return BaseResponse(code=0, msg="任务不存在")
+
+    # 通过关联 DataSource 判断类型
+    source = db.execute(select(DataSource).where(DataSource.id == task.source_id)).scalar_one_or_none()
+    if not source or source.type != "kafka":
+        return BaseResponse(code=0, msg="任务关联的数据源不是Kafka类型")
+
+    sync_req = _build_kafka_req(task)
+    ok = await kafka_manager.start(sync_req)
+    return BaseResponse(msg="Consumer已启动" if ok else "Consumer已在运行中")
+@router.post("/kafka/stop", summary="停止Kafka常驻消费", response_model=BaseResponse)
+async def kafka_stop(req: TaskIdReq):
+    ok = await kafka_manager.stop(req.task_id)
+    return BaseResponse(msg="Consumer已停止" if ok else "Consumer未在运行")
+
+
+@router.post("/kafka/status", summary="查询Kafka消费状态", response_model=BaseResponse)
+async def kafka_status(req: TaskIdReq):
+    return BaseResponse(data={"status": kafka_manager.status(req.task_id)}, msg="获取成功")
+
 # endregion
