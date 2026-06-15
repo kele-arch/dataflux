@@ -3740,5 +3740,175 @@ const elapsedSeries = {
 当对接 `/monitor/trend` 等图表接口时，后端返回的是时序数组，例如 `[{"_time": "...", "request_count": 50, "avg_time_ms": 42.1}]`。
 
 - 时间轴处理： 在将这些数据喂给 Echarts 之前，注意处理 ISO 8601 时间格式（`_time`）。将 UTC 时间统一格式化为本地时间（如 `YYYY-MM-DD HH:mm`）再作为 X 轴。
-- 双 Y 轴设计： 像 Socket/API/Kafka 的监控，通常有“调用量/消费量”和“延迟（ms）”两个维度，建议图表采用左侧柱状图（量）、右侧折线图（延迟）的双 Y 轴设计，这样大盘展示最具视觉冲击力。
+- 双 Y 轴设计： 像 Socket/API/Kafka 的监控，通常有”调用量/消费量”和”延迟（ms）”两个维度，建议图表采用左侧柱状图（量）、右侧折线图（延迟）的双 Y 轴设计，这样大盘展示最具视觉冲击力。
+
+
+
+---
+
+## 十六、数据探索 `/explorer`
+
+> 通用数据查询模块，用于探索采集落地库中所有表的表结构、字段信息和数据内容。查询目标库为采集结果库（`dataflux_collected`），而非系统元数据库。
+
+### 1. 获取所有表列表
+
+`POST /explorer/tables/list`
+
+支持关键字模糊搜索表名。
+
+```json
+// 查全部
+{}
+
+// 按关键字过滤
+{“keyword”: “kafka”}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| keyword | string | ❌ | 表名模糊搜索关键字，不传则返回全部表名 |
+
+响应：
+
+```json
+{
+  “code”: 1,
+  “msg”: “获取表列表成功”,
+  “data”: [
+    “api_rainyun_coupons”,
+    “ftp_test_csv”,
+    “kafka_test_data”,
+    “kafka_test_sensor_topic”,
+    “snmp_interfaces”,
+    “socket_test_data”,
+    “sys_collect_record”,
+    “sys_collect_task”,
+    “sys_data_source”,
+    “sys_task_log”
+  ]
+}
+```
+
+---
+
+### 2. 获取表结构详情
+
+`POST /explorer/tables/columns`
+
+获取指定表的所有字段名、类型、是否可空、默认值、注释等元数据。
+
+```json
+{“table_name”: “kafka_test_data”}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| table_name | string | ✅ | 目标表名（采集落地库中的表） |
+
+响应：
+
+```json
+{
+  “code”: 1,
+  “msg”: “获取表结构成功”,
+  “data”: [
+    {
+      “name”: “id”,
+      “type”: “VARCHAR(32)”,
+      “nullable”: false,
+      “default”: null,
+      “comment”: null
+    },
+    {
+      “name”: “raw_doc”,
+      “type”: “JSON”,
+      “nullable”: false,
+      “default”: null,
+      “comment”: null
+    },
+    {
+      “name”: “collected_at”,
+      “type”: “VARCHAR(64)”,
+      “nullable”: true,
+      “default”: null,
+      “comment”: null
+    }
+  ]
+}
+```
+
+---
+
+### 3. 通用表数据分页查询
+
+`POST /explorer/tables/data`
+
+基于动态条件进行分页、排序、精确匹配、模糊匹配查询。适用于前端通用表格组件。
+
+```json
+{
+  “table_name”: “sys_task_log”,
+  “page”: 1,
+  “size”: 15,
+  “filters”: {“status”: “success”},
+  “like_filters”: {“task_name”: “同步”},
+  “sort_by”: “start_time”,
+  “sort_order”: “desc”
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| table_name | string | ✅ | 目标表名 |
+| page | int | ❌ | 页码，默认 `1` |
+| size | int | ❌ | 每页条数，默认 `15` |
+| filters | object | ❌ | 精确匹配条件：`{“列名”: 值}`，多组 AND 叠加 |
+| like_filters | object | ❌ | 模糊匹配条件：`{“列名”: “关键字”}` → `WHERE 列名 LIKE '%关键字%'` |
+| sort_by | string | ❌ | 排序字段名，不填则自动用主键降序 |
+| sort_order | string | ❌ | `desc`（默认）/ `asc` |
+
+**过滤规则：**
+- `filters` 中的字段名必须在表中存在，取值为 `None` 或列不存在的条目会被静默跳过
+- `like_filters` 同理，空字符串也会被跳过
+- 多个 filter 之间是 **AND** 关系
+
+**排序规则：**
+- 传了 `sort_by` 且字段存在 → 按该字段排序
+- 没传或字段不存在 → 自动取主键第一列降序排列
+
+响应：
+
+```json
+{
+  “code”: 1,
+  “msg”: “查询成功”,
+  “data”: {
+    “total”: 128,
+    “items”: [
+      {
+        “id”: “a1b2c3d4...”,
+        “task_id”: “550e8400...”,
+        “task_name”: “每日同步用户表”,
+        “status”: “success”,
+        “start_time”: “2026-06-15 02:00:00”,
+        “end_time”: “2026-06-15 02:03:25”,
+        “tables_synced”: 2,
+        “total_records”: 15000,
+        “error_msg”: null
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 典型使用场景
+
+| 场景 | 接口组合 |
+|------|----------|
+| 浏览采集结果 | `/tables/list` → 选表 → `/tables/columns` 看结构 → `/tables/data` 查数据 |
+| 前端通用数据表格 | `/tables/data` + `filters` + `like_filters` + `sort_by` 动态组合 |
+| 调试采集任务 | 查 `sys_task_log` 或 `kafka_test_data` 等目标表确认数据已入库 |
+| 快速搜索 | `/tables/list` 传 `keyword` 快速定位包含特定关键词的表 |
 
