@@ -1,4 +1,4 @@
-# 前端接口对接文档
+# 接口对接文档
 
 > BaseURL: `http://0.0.0.0:8028/api/v1`
 
@@ -26,7 +26,7 @@
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | name | string | ✅ | 数据源名称 |
-| type | string | ✅ | 类型：`mysql` / `postgresql` |
+| type | string | ✅ | 类型：`mysql` / `postgresql` / `oracle` / `sqlserver` / `dm` / `sqlite` / `mongodb` / `ftp` / `api` / `snmp` / `socket` / `kafka` |
 | host | string | ✅ | 主机地址 |
 | port | int | ✅ | 端口 |
 | db_name | string | ✅ | 数据库名 |
@@ -97,6 +97,7 @@
 | type | string | ❌ | 按类型过滤 |
 | sort_by | string | ❌ | 排序字段：`create_time`（默认）/ `name` |
 | sort_order | string | ❌ | 排序方向：`desc`（默认）/ `asc` |
+| db_type | string | ❌ | 数据源筛选 |
 
 响应：
 
@@ -222,7 +223,7 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| db_type | string | ✅ | `mysql` / `postgresql` |
+| db_type | string | ✅ | `mysql` / `postgresql` / `oracle` / `sqlserver` / `dm` / `sqlite` / `mongodb` |
 | host | string | ✅ | 主机地址 |
 | port | int | ✅ | 端口 |
 | username | string | ✅ | 用户名 |
@@ -1434,7 +1435,624 @@ MongoDB 不支持 SQL 查询，但可以用 `collect_mode: "custom_sql"` 配合 
 
 ---
 
-## 七、FTP/SFTP 文件采集专项
+## 七、Oracle 同步专项
+
+> Oracle 数据库默认大写存储表名和列名，使用 `username` 作为 schema。同步引擎已做全面适配，默认使用 service_name 方式连接，也支持 SID 模式。前端传参大小写均可。
+
+### 1. 创建 Oracle 数据源
+
+```json
+{
+  "name": "生产Oracle",
+  "type": "oracle",
+  "host": "192.168.1.100",
+  "port": 1521,
+  "db_name": "ORCLPDB1",
+  "username": "scott",
+  "password": "tiger123"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | ✅ | 数据源别名 |
+| type | string | ✅ | 固定 `"oracle"` |
+| host | string | ✅ | Oracle 服务器地址 |
+| port | int | ✅ | Oracle 端口，默认 `1521` |
+| db_name | string | ✅ | 服务名 (service_name)，如 `ORCLPDB1`。传了则走 service_name 模式 |
+| username | string | ✅ | 用户名（同时作为 schema 名） |
+| password | string | ✅ | 密码 |
+
+> **注意：** `db_name` 会被用作 Oracle 的 `service_name` 参数。连接串格式为 `oracle+oracledb://user:pwd@host:port/?service_name=xxx`。
+
+---
+
+### 2. Oracle 连接模式（service_name vs SID）
+
+Oracle 默认使用 **service_name** 模式（通过 `db_name` 指定）。如果需要使用 **SID** 模式，可通过 `config_json` 配置：
+
+```json
+{
+  "name": "老版Oracle-SID模式",
+  "type": "oracle",
+  "host": "192.168.1.100",
+  "port": 1521,
+  "db_name": "",
+  "username": "scott",
+  "password": "tiger123",
+  "config_json": {"sid": "ORCL"}
+}
+```
+
+| 场景 | db_name | config_json | 连接串格式 |
+|------|---------|-------------|-----------|
+| service_name 模式（默认） | `"ORCLPDB1"` | 不传 | `oracle+oracledb://.../?service_name=ORCLPDB1` |
+| SID 模式 | `""` | `{"sid":"ORCL"}` | `oracle+oracledb://.../ORCL` |
+
+> **建议：** 新版本 Oracle（12c+）优先使用 service_name 模式。如果数据源保存后"测试连接"失败或"获取表列表"为空，请检查 DBA 确认应该填 service_name 还是 SID。
+
+---
+
+### 3. Oracle → PostgreSQL（全量同步）
+
+最简写法，前端只需指定源表名：
+
+```json
+{
+  "task_name": "Oracle全量同步",
+  "source_id": "你的Oracle数据源ID",
+  "sync_tables": ["EMPLOYEES", "DEPARTMENTS"],
+  "collect_mode": "full"
+}
+```
+
+| 字段 | 值 | 说明 |
+|------|------|------|
+| sync_tables | `["EMPLOYEES","DEPARTMENTS"]` | 表名大小写均可，引擎自动匹配 Oracle 物理大写名 |
+| collect_mode | `"full"` | 全量抽取 |
+| target_type | 不传 | 默认 `"postgresql"` |
+
+**目标表结构：**
+- 所有列自动转小写（`EMPLOYEE_ID` → `employee_id`）
+- 所有列默认 `nullable=True`（避免源库 NOT NULL 约束导致 NULL 值插入失败）
+- Oracle `VARCHAR2` → PG `VARCHAR`，`NUMBER` → `NUMERIC`/`INTEGER`，`CLOB` → `TEXT`，`BLOB` → `BYTEA`
+- Oracle `DATE`/`TIMESTAMP` → PG `TIMESTAMP`
+- Oracle 默认值函数（`SYSDATE`、`SYS_GUID()`、`SYSTIMESTAMP` 等）自动剥离
+
+---
+
+### 4. Oracle 增量采集（inc_id）
+
+基于自增列增量：
+
+```json
+{
+  "task_name": "Oracle自增列增量",
+  "source_id": "你的Oracle数据源ID",
+  "sync_tables": ["ORDERS"],
+  "collect_mode": "inc_id",
+  "incremental_column": "id"
+}
+```
+
+| 字段 | 值 | 说明 |
+|------|------|------|
+| collect_mode | `"inc_id"` | 按自增列增量 |
+| incremental_column | `"id"` | 源表中的自增列名（大小写均可，引擎自动转大写匹配 Oracle 物理列名） |
+| last_watermark | 不传 | 首次全量，之后自动记录水位线 |
+
+**原理：** 首次全量抽取，完成后水位线记录为最后一条的 `id` 值。下次执行时自动过滤 `ID > 上次水位线`。
+
+---
+
+### 5. Oracle 增量采集（inc_time）
+
+基于时间字段增量：
+
+```json
+{
+  "task_name": "Oracle时间增量",
+  "source_id": "你的Oracle数据源ID",
+  "sync_tables": ["ORDERS"],
+  "collect_mode": "inc_time",
+  "incremental_column": "update_time"
+}
+```
+
+| 字段 | 值 | 说明 |
+|------|------|------|
+| collect_mode | `"inc_time"` | 按时间字段增量 |
+| incremental_column | `"update_time"` | 源表中的时间字段名（大小写均可） |
+| last_watermark | 不传 | 首次全量，之后自动记录最大时间值 |
+
+**原理：** 过滤 `UPDATE_TIME > 上次水位线`。水位线同时支持 `datetime` 对象和 `VARCHAR2` 字符串格式的自动解析。
+
+---
+
+### 6. Oracle 整库同步（不指定表）
+
+不传 `sync_tables`，自动同步用户 schema 下所有表：
+
+```json
+{
+  "task_name": "Oracle整库同步",
+  "source_id": "你的Oracle数据源ID",
+  "collect_mode": "full"
+}
+```
+
+> 引擎自动用 `inspect` 获取 `username.upper()` schema 下的全部表名。
+
+---
+
+### 7. Oracle 表名映射
+
+支持将 Oracle 源表名映射到 PG 目标表名：
+
+```json
+{
+  "task_name": "Oracle改名同步",
+  "source_id": "你的Oracle数据源ID",
+  "sync_tables": ["EMPLOYEES", "DEPARTMENTS"],
+  "table_mapping": {"EMPLOYEES": "t_employees", "DEPARTMENTS": "t_departments"},
+  "collect_mode": "full"
+}
+```
+
+| 源表名（Oracle） | 目标表名（PG） | 说明 |
+|----------------|----------------|------|
+| `EMPLOYEES` | `t_employees` | 映射生效 |
+| `DEPARTMENTS` | `t_departments` | 映射生效 |
+
+> 映射匹配大小写不敏感，`EMPLOYEES`、`employees`、`Employees` 都能匹配到。
+
+---
+
+### 8. Oracle + custom_sql 模式
+
+用自定义 SQL 从 Oracle 抽取数据，写入 PG 指定表：
+
+```json
+{
+  "task_name": "Oracle SQL抽取",
+  "source_id": "你的Oracle数据源ID",
+  "collect_mode": "custom_sql",
+  "custom_sql": "SELECT * FROM SCOTT.EMPLOYEES WHERE STATUS = 'ACTIVE'",
+  "topic_or_table": "active_employees"
+}
+```
+
+| 字段 | 值 | 说明 |
+|------|------|------|
+| collect_mode | `"custom_sql"` | 自定义 SQL 模式 |
+| custom_sql | `"SELECT ..."` | 在 Oracle 源库执行的 SQL |
+| topic_or_table | `"active_employees"` | PG 目标库中已存在的表名（必填） |
+
+> **注意：** SQL 中的表名和列名必须使用 Oracle 的物理名（通常是大写）。如果跨 schema 查询，需要写完整限定名如 `SCOTT.EMPLOYEES`。
+
+---
+
+### Oracle 适配机制汇总
+
+| 适配项 | 处理方式 |
+|--------|----------|
+| 连接串（service_name） | `oracle+oracledb://user:pwd@host:port/?service_name=xxx`（默认） |
+| 连接串（SID） | `oracle+oracledb://user:pwd@host:port/SID`（需 `config_json.sid`） |
+| schema | 反射时自动注入 `schema=username.upper()` |
+| 表名大小写 | `inspect` 查物理名，前端传 `EMPLOYEES` 或 `employees` 均可 |
+| 列名大小写 | 反射后自动转小写，行数据用大写/小写双匹配 |
+| NOT NULL | 目标表所有列强制 `nullable=True`，避免源库 NULL 值插入失败 |
+| `VARCHAR2` / `NVARCHAR2` | 归一化为 `VARCHAR` / `TEXT` |
+| `NUMBER` | 精度 scale=0 → `INTEGER`；其他 → `NUMERIC(precision, scale)` |
+| `CLOB` / `NCLOB` | 归一化为 `TEXT` |
+| `BLOB` / `RAW` | 归一化为 `BYTEA` |
+| `DATE` / `TIMESTAMP` | 归一化为 `TIMESTAMP` |
+| `INTERVAL` | 归一化为 `TEXT` |
+| `FLOAT` / `BINARY_FLOAT` / `BINARY_DOUBLE` | 归一化为 `NUMERIC` |
+| `SYSDATE` / `SYS_GUID()` / `SYSTIMESTAMP` | 自动剥离默认值函数 |
+| LOB 对象 | 自动 `.read()` 读取内容 |
+| 自增列 (`autoincrement`) | 自动剥离，防止 PG 建表歧义 |
+
+
+
+---
+
+## 八、SQL Server 同步专项
+
+> SQL Server 数据库保留原始列名大小写，默认端口 `1433`。同步引擎支持默认实例和命名实例两种连接方式，以及 Windows 认证和 SQL Server 认证。前端传参大小写均可（SQL Server 默认不区分大小写）。
+
+### 1. 创建 SQL Server 数据源
+
+```json
+{
+  "name": "生产SQLServer",
+  "type": "sqlserver",
+  "host": "192.168.1.100",
+  "port": 1433,
+  "db_name": "FactoryDB",
+  "username": "sa",
+  "password": "YourPassword123"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | ✅ | 数据源别名 |
+| type | string | ✅ | 固定 `"sqlserver"` |
+| host | string | ✅ | SQL Server 服务器地址 |
+| port | int | ✅ | 端口，默认实例 `1433` |
+| db_name | string | ✅ | 数据库名 |
+| username | string | ✅ | 登录用户名 |
+| password | string | ✅ | 登录密码 |
+
+> **注意：** 连接串格式为 `mssql+pymssql://user:pwd@host:port/db?charset=utf8`。
+
+---
+
+### 2. SQL Server 命名实例连接
+
+如果 SQL Server 使用了**非默认的命名实例**（如 `HOST\MSSQLSERVER`），通过 `config_json` 指定实例名：
+
+```json
+{
+  "name": "SQLServer命名实例",
+  "type": "sqlserver",
+  "host": "192.168.1.100",
+  "port": 1433,
+  "db_name": "FactoryDB",
+  "username": "sa",
+  "password": "YourPassword123",
+  "config_json": {"instance": "MSSQLSERVER"}
+}
+```
+
+| 场景 | config_json | 连接串格式 |
+|------|-------------|-----------|
+| 默认实例（无命名实例） | 不传 | `mssql+pymssql://...@host:1433/db` |
+| 命名实例 | `{"instance":"MSSQLSERVER"}` | `mssql+pymssql://...@host\MSSQLSERVER/db` |
+
+> **注意：** `config_json.instance` 仅在 SQL Server 使用命名实例时才需要填写，绝大多数情况下不需要。
+
+---
+
+### 3. SQL Server → PostgreSQL（全量同步）
+
+最简写法：
+
+```json
+{
+  "task_name": "SQLServer全量同步",
+  "source_id": "你的SQLServer数据源ID",
+  "sync_tables": ["Employees", "Orders"],
+  "collect_mode": "full"
+}
+```
+
+| 字段 | 值 | 说明 |
+|------|------|------|
+| sync_tables | `["Employees","Orders"]` | 表名保持原始大小写即可 |
+| collect_mode | `"full"` | 全量抽取 |
+| target_type | 不传 | 默认 `"postgresql"` |
+
+**目标表结构：**
+- 列名保持原始大小写（如 `EmployeeID` 保持为 `EmployeeID`）
+- 所有列默认 `nullable=True`
+- SQL Server `NVARCHAR`/`VARCHAR` → PG `VARCHAR`，`VARCHAR(MAX)` → `TEXT`
+- SQL Server `INT`/`BIGINT`/`SMALLINT`/`TINYINT` → PG `INTEGER`
+- SQL Server `DECIMAL`/`NUMERIC`/`MONEY` → PG `NUMERIC`
+- SQL Server `DATETIME`/`DATETIME2`/`SMALLDATETIME` → PG `TIMESTAMP`
+- SQL Server `BIT` → PG `BOOLEAN`
+- SQL Server `UNIQUEIDENTIFIER` → PG `VARCHAR(36)`
+- SQL Server `IMAGE`/`VARBINARY` → PG `BYTEA`
+- SQL Server `XML` → PG `TEXT`
+- SQL Server 默认值函数（`GETDATE()`、`NEWID()` 等）自动剥离
+- SQL Server `IDENTITY` 自增属性自动剥离
+
+---
+
+### 4. SQL Server 增量采集（inc_id）
+
+基于自增列增量：
+
+```json
+{
+  "task_name": "SQLServer自增列增量",
+  "source_id": "你的SQLServer数据源ID",
+  "sync_tables": ["Orders"],
+  "collect_mode": "inc_id",
+  "incremental_column": "OrderID"
+}
+```
+
+| 字段 | 值 | 说明 |
+|------|------|------|
+| collect_mode | `"inc_id"` | 按自增列增量 |
+| incremental_column | `"OrderID"` | 源表中的自增列名（大小写需与数据库实际一致） |
+| last_watermark | 不传 | 首次全量，之后自动记录水位线 |
+
+---
+
+### 5. SQL Server 增量采集（inc_time）
+
+基于时间字段增量：
+
+```json
+{
+  "task_name": "SQLServer时间增量",
+  "source_id": "你的SQLServer数据源ID",
+  "sync_tables": ["Orders"],
+  "collect_mode": "inc_time",
+  "incremental_column": "UpdateTime"
+}
+```
+
+---
+
+### 6. SQL Server 整库同步（不指定表）
+
+不传 `sync_tables`，自动同步默认 schema（`dbo`）下所有表：
+
+```json
+{
+  "task_name": "SQLServer整库同步",
+  "source_id": "你的SQLServer数据源ID",
+  "collect_mode": "full"
+}
+```
+
+> 引擎自动用 `inspect` 获取数据库的全部用户表名。如果表分布在多个 schema（如 `dbo`、`sales` 等），都会一并反射。
+
+---
+
+### 7. SQL Server 表名映射
+
+支持将 SQL Server 源表名映射到 PG 目标表名：
+
+```json
+{
+  "task_name": "SQLServer改名同步",
+  "source_id": "你的SQLServer数据源ID",
+  "sync_tables": ["Employees", "Orders"],
+  "table_mapping": {"Employees": "t_employees", "Orders": "t_orders"},
+  "collect_mode": "full"
+}
+```
+
+| 源表名（SQL Server） | 目标表名（PG） | 说明 |
+|---------------------|----------------|------|
+| `Employees` | `t_employees` | 映射生效 |
+| `Orders` | `t_orders` | 映射生效 |
+
+---
+
+### 8. SQL Server + custom_sql 模式
+
+用自定义 SQL 从 SQL Server 抽取数据：
+
+```json
+{
+  "task_name": "SQLServer SQL抽取",
+  "source_id": "你的SQLServer数据源ID",
+  "collect_mode": "custom_sql",
+  "custom_sql": "SELECT * FROM dbo.Employees WHERE Status = 'Active'",
+  "topic_or_table": "active_employees"
+}
+```
+
+> **注意：** SQL 中建议写完整限定名 `dbo.Employees`，避免跨 schema 歧义。
+
+---
+
+### SQL Server 适配机制汇总
+
+| 适配项 | 处理方式 |
+|--------|----------|
+| 连接串（默认实例） | `mssql+pymssql://user:pwd@host:port/db?charset=utf8` |
+| 连接串（命名实例） | `mssql+pymssql://user:pwd@host\instance/db?charset=utf8`（需 `config_json.instance`） |
+| schema | 默认使用 `dbo`，无需显式指定 |
+| 表名 | 保持原始大小写 |
+| 列名 | 保持原始大小写 |
+| NOT NULL | 目标表所有列强制 `nullable=True` |
+| `NVARCHAR` / `VARCHAR` | 有长度 → `VARCHAR(n)`；`MAX` → `TEXT` |
+| `NCHAR` / `CHAR` | 归一化为 `VARCHAR` |
+| `TEXT` / `NTEXT` | 归一化为 `TEXT` |
+| `INT` / `BIGINT` / `SMALLINT` / `TINYINT` | 归一化为 `INTEGER` |
+| `DECIMAL` / `NUMERIC` / `MONEY` / `SMALLMONEY` | 归一化为 `NUMERIC` |
+| `FLOAT` / `REAL` | 归一化为 `NUMERIC` |
+| `DATETIME` / `DATETIME2` / `SMALLDATETIME` | 归一化为 `TIMESTAMP` |
+| `DATE` | 归一化为 `DATE` |
+| `TIME` | 归一化为 `TEXT`（PG Time 有时区问题，转文本更安全） |
+| `BIT` | 归一化为 `BOOLEAN` |
+| `UNIQUEIDENTIFIER` (GUID) | 归一化为 `VARCHAR(36)` |
+| `VARBINARY` / `BINARY` / `IMAGE` | 归一化为 `BYTEA` |
+| `XML` | 归一化为 `TEXT` |
+| `GETDATE()` / `NEWID()` / `SYSDATETIME()` | 自动剥离默认值函数 |
+| `IDENTITY` (自增列) | 自动剥离 `autoincrement` 属性 |
+
+
+
+---
+
+## 九、SQLite 同步专项
+
+> SQLite 是嵌入式文件数据库，不需要 host/port/用户名/密码。`db_name` 字段填写 `.sqlite3` / `.db` 文件的**绝对路径**。同步引擎基于 Python 内置 `sqlite3` 模块，零额外依赖。
+
+### 1. 创建 SQLite 数据源
+
+```json
+{
+  "name": "本地SQLite",
+  "type": "sqlite",
+  "host": "0.0.0.0",
+  "port": 0,
+  "db_name": "E:/data/mydb.sqlite3",
+  "username": "",
+  "password": ""
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | ✅ | 数据源别名 |
+| type | string | ✅ | 固定 `"sqlite"` |
+| host | string | ✅ | 随便填（如 `"0.0.0.0"`），不参与连接 |
+| port | int | ✅ | 随便填（如 `0`），不参与连接 |
+| db_name | string | ✅ | **数据库文件的绝对路径**，如 `/data/mydb.sqlite3` 或 `E:/data/mydb.sqlite3` |
+| username | string | ❌ | 随便填，不参与连接 |
+| password | string | ❌ | 随便填，不参与连接 |
+
+> **注意：** SQLite 连接串格式为 `sqlite:///文件绝对路径?timeout=15`。Windows 路径的反斜杠 `\` 会自动转为正斜杠 `/`，无需手动处理。
+
+---
+
+### 2. SQLite → PostgreSQL（全量同步）
+
+```json
+{
+  "task_name": "SQLite全量同步",
+  "source_id": "你的SQLite数据源ID",
+  "sync_tables": ["users", "orders"],
+  "collect_mode": "full"
+}
+```
+
+| 字段 | 值 | 说明 |
+|------|------|------|
+| sync_tables | `["users","orders"]` | SQLite 表名保持原始大小写即可 |
+| collect_mode | `"full"` | 全量抽取 |
+| target_type | 不传 | 默认 `"postgresql"` |
+
+**目标表结构：**
+- 列名保持原始大小写
+- 所有列默认 `nullable=True`
+- SQLite 动态类型归一化：`INT`/`INTEGER`/`BIGINT`/`TINYINT` → PG `INTEGER`
+- `TEXT`/`CLOB`/`CHAR`/`VARCHAR(n)` → PG `VARCHAR(n)` 或 `TEXT`
+- `REAL`/`FLOAT`/`DOUBLE` → PG `FLOAT`
+- `NUMERIC`/`DECIMAL` → PG `NUMERIC`
+- `BLOB` → PG `TEXT`（十六进制字符串存储）
+- `DATETIME`/`DATE` → PG `TIMESTAMP`/`DATE`
+- `BOOLEAN` → PG `BOOLEAN`
+- 无类型声明的列（NullType）→ PG `TEXT`
+- `CURRENT_TIMESTAMP`/`CURRENT_DATE`/`CURRENT_TIME` 默认值自动剥离
+- `INTEGER PRIMARY KEY`（ROWID 别名）的 `autoincrement` 属性自动剥离
+
+---
+
+### 3. SQLite 增量采集（inc_id）
+
+基于自增列增量：
+
+```json
+{
+  "task_name": "SQLite自增列增量",
+  "source_id": "你的SQLite数据源ID",
+  "sync_tables": ["orders"],
+  "collect_mode": "inc_id",
+  "incremental_column": "id"
+}
+```
+
+| 字段 | 值 | 说明 |
+|------|------|------|
+| collect_mode | `"inc_id"` | 按自增列增量 |
+| incremental_column | `"id"` | 源表中的自增列名 |
+| last_watermark | 不传 | 首次全量，之后自动记录水位线 |
+
+---
+
+### 4. SQLite 增量采集（inc_time）
+
+```json
+{
+  "task_name": "SQLite时间增量",
+  "source_id": "你的SQLite数据源ID",
+  "sync_tables": ["logs"],
+  "collect_mode": "inc_time",
+  "incremental_column": "created_at"
+}
+```
+
+---
+
+### 5. SQLite 整库同步（不指定表）
+
+不传 `sync_tables`，自动同步数据库中所有表：
+
+```json
+{
+  "task_name": "SQLite整库同步",
+  "source_id": "你的SQLite数据源ID",
+  "collect_mode": "full"
+}
+```
+
+> **注意：** SQLite 不支持 `only` 参数反射，引擎采用「全量反射后手动过滤」策略——先反射全部表，再根据 `sync_tables` 移除不需要的表。
+
+---
+
+### 6. SQLite 表名映射
+
+```json
+{
+  "task_name": "SQLite改名同步",
+  "source_id": "你的SQLite数据源ID",
+  "sync_tables": ["users", "orders"],
+  "table_mapping": {"users": "t_users", "orders": "t_orders"},
+  "collect_mode": "full"
+}
+```
+
+| 源表名（SQLite） | 目标表名（PG） | 说明 |
+|-----------------|----------------|------|
+| `users` | `t_users` | 映射生效 |
+| `orders` | `t_orders` | 映射生效 |
+
+---
+
+### 7. SQLite + custom_sql 模式
+
+用自定义 SQL 从 SQLite 抽取数据：
+
+```json
+{
+  "task_name": "SQLite SQL抽取",
+  "source_id": "你的SQLite数据源ID",
+  "collect_mode": "custom_sql",
+  "custom_sql": "SELECT * FROM users WHERE status = 'active'",
+  "topic_or_table": "active_users"
+}
+```
+
+---
+
+### SQLite 适配机制汇总
+
+| 适配项 | 处理方式 |
+|--------|----------|
+| 连接串 | `sqlite:///绝对路径?timeout=15`（不需要 host/port/用户名/密码） |
+| 路径兼容 | Windows 反斜杠 `\` 自动转正斜杠 `/` |
+| 反射策略 | 全量反射后手动过滤（不支持 `only` 参数） |
+| 列名 | 保持原始大小写 |
+| NOT NULL | 目标表所有列强制 `nullable=True` |
+| `INT` / `INTEGER` / `BIGINT` / `TINYINT` | 归一化为 `INTEGER` |
+| `TEXT` / `CLOB` / `CHAR` | 有长度 → `VARCHAR(n)`，无长度 → `TEXT` |
+| `VARCHAR(n)` | 保留长度 `VARCHAR(n)` |
+| `REAL` / `FLOAT` / `DOUBLE` | 归一化为 `FLOAT` |
+| `NUMERIC` / `DECIMAL` | 归一化为 `NUMERIC(precision, scale)` |
+| `BLOB` | 归一化为 `TEXT`（hex 字符串） |
+| `DATETIME` | 归一化为 `TIMESTAMP` |
+| `DATE` | 归一化为 `DATE` |
+| `TIME` | 归一化为 `TIMESTAMP` |
+| `BOOLEAN` | 归一化为 `BOOLEAN` |
+| 无类型（NullType） | 兜底归一化为 `TEXT` |
+| `CURRENT_TIMESTAMP` 等 | 自动剥离默认值 |
+| `AUTOINCREMENT` | 自动剥离自增属性 |
+
+
+
+---
+
+## 十、FTP/SFTP 文件采集专项
 
 > 支持 FTP / FTPS / SFTP / SDTP 四种协议。自动检测 FTPS 加密、流式下载带毫秒级中断探针、MD5 去重、内容哈希幂等写入。支持 CSV / JSON / YAML / Excel / XML 结构化解析入库。
 
@@ -1937,7 +2555,7 @@ YAML 多文档拆解测试
 
 ---
 
-## 八、API 接口采集专项
+## 十一、API 接口采集专项
 
 > API 采集引擎支持定时调用 HTTP 接口，将响应数据存入 PG，同时将监控指标写入 InfluxDB。
 
@@ -2218,7 +2836,7 @@ ORDER BY collected_at DESC;
 
 
 
-## 九、InfluxDB 监控查询接口 `/monitor`
+## 十二、InfluxDB 监控查询接口 `/monitor`
 
 > 查询 API 采集引擎写入 InfluxDB 的监控指标数据，用于可视化大盘。
 
@@ -2386,7 +3004,7 @@ ORDER BY collected_at DESC;
 
 ---
 
-## 十、SNMP 采集专项
+## 十三、SNMP 采集专项
 
 > 基于 pysnmp 7.x 异步 API，支持 v1/v2c/v3 三种版本。性能指标入 InfluxDB，设备表格信息入 PG。
 
@@ -2598,7 +3216,7 @@ WALK ifInOctets → {"1": 1234567, "2": 8901234}
 
 
 
-## 十一、Socket 采集专项
+## 十四、Socket 采集专项
 
 > 原生 TCP/UDP Socket 主动请求-响应模式。支持文本指令和十六进制二进制协议。监控入 InfluxDB，数据入 PG。
 
@@ -2782,7 +3400,7 @@ WALK ifInOctets → {"1": 1234567, "2": 8901234}
 
 ---
 
-## 十二、Kafka 流式采集专项
+## 十五、Kafka 流式采集专项
 
 > 常驻 Consumer 模式，启动后持续消费。攒批写入 PG，offset 写入成功后才 commit。消费速率写入 InfluxDB。
 
