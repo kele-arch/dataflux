@@ -249,6 +249,7 @@ class TaskOut(BaseModel):
     id: str
     task_name: str
     source_id: Optional[str] = None
+    db_type: Optional[str] = None
     topic_or_table: Optional[str]
     status: int
     run_status: Optional[str] = "idle"

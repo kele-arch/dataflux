@@ -90,7 +90,14 @@ def update_task(req: TaskUpdateReq, db: Session = Depends(get_db)):
 
 
 @router.post("/delete", summary="删除同步任务", response_model=BaseResponse)
-def delete_task(req: TaskIdReq, db: Session = Depends(get_db)):
+async def delete_task(req: TaskIdReq, db: Session = Depends(get_db)):
+    # 删除前先检查是否为 Kafka 任务，是则先停 Consumer
+    task = crud_task.get_by_id(db, req.task_id)
+    if task:
+        source = db.execute(select(DataSource).where(DataSource.id == task.source_id)).scalar_one_or_none()
+        if source and source.type == "kafka":
+            await kafka_manager.stop(req.task_id)
+
     success = crud_task.delete(db, req.task_id)
     if not success:
         return BaseResponse(code=0, msg="任务不存在")
@@ -99,11 +106,31 @@ def delete_task(req: TaskIdReq, db: Session = Depends(get_db)):
 
 
 @router.post("/change_status", summary="切换任务启用/停用", response_model=BaseResponse)
-def change_task_status(req: TaskStatusReq, db: Session = Depends(get_db)):
+async def change_task_status(req: TaskStatusReq, db: Session = Depends(get_db)):
+    task = crud_task.get_by_id(db, req.task_id)
+    if not task:
+        return BaseResponse(code=0, msg="任务不存在")
+
+    # 判断是否为 Kafka 任务（类型在 DataSource 表）
+    source = db.execute(select(DataSource).where(DataSource.id == task.source_id)).scalar_one_or_none()
+    is_kafka = source and source.type == "kafka"
+
     success = crud_task.change_status(db, req.task_id, req.status)
     if not success:
-        return BaseResponse(code=0, msg="任务不存在")
+        return BaseResponse(code=0, msg="更新失败")
+
     refresh_scheduler_jobs()
+
+    # Kafka 联动运行时状态
+    if is_kafka:
+        if req.status == 0:
+            # 停用时: 必须强制停止底层 Consumer
+            await kafka_manager.stop(req.task_id)
+            logger.info(f"Kafka 任务 [{req.task_id}] 已停用, 底层 Consumer 已被强制停止")
+        elif req.status == 1:
+            # 仅更新配置,不拉起进程！把启动权还给前端按钮
+            logger.info(f"Kafka 任务 [{req.task_id}] 配置已启用, 等待用户手动点击启动按钮")
+
     label = "启用" if req.status == 1 else "停用"
     return BaseResponse(msg=f"任务已{label}")
 
@@ -278,6 +305,8 @@ async def kafka_start(req: TaskIdReq, db: Session = Depends(get_db)):
     sync_req = _build_kafka_req(task)
     ok = await kafka_manager.start(sync_req)
     return BaseResponse(msg="Consumer已启动" if ok else "Consumer已在运行中")
+
+
 @router.post("/kafka/stop", summary="停止Kafka常驻消费", response_model=BaseResponse)
 async def kafka_stop(req: TaskIdReq):
     ok = await kafka_manager.stop(req.task_id)
