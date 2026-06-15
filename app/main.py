@@ -33,6 +33,55 @@ from app.core import logger, project_rootpath
 from app.middleware import init_middlewares
 from app.core.arq_pool import init_arq_pool, close_arq_pool
 from app.services.scheduler_service import scheduler, refresh_scheduler_jobs
+from app.services.kafka_manager import kafka_manager, _build_kafka_req
+
+
+async def start_all_kafka_tasks():
+    """
+    启动所有状态为 1 的 Kafka 任务
+    """
+    from app.db.session import SessionLocal
+    from sqlalchemy import select
+    from app.models.collectTaskModel import CollectTask
+    from app.models.dataSourceModel import DataSource
+    from app.schemas.tsync import DBSyncReq
+    from app.core import logger
+
+    db = SessionLocal()
+    try:
+        # 通过 JOIN 关联 DataSource 表,过滤 DataSource.type == 'kafka'
+        results = db.execute(
+            select(CollectTask, DataSource)
+            .join(DataSource, CollectTask.source_id == DataSource.id)
+            .where(
+                DataSource.type == "kafka",
+                CollectTask.status == 1
+            )
+        ).all()
+
+        for task, source in results:
+            req = DBSyncReq(
+                task_id=task.id,
+                db_type="kafka",
+                host=source.host if source else "",
+                port=source.port if source else 0,
+                username="", password="", db_name="",
+                target_table=task.topic_or_table,
+                kafka_bootstrap_servers=task.kafka_bootstrap_servers,
+                kafka_topic=task.kafka_topic,
+                kafka_group_id=task.kafka_group_id,
+                kafka_auto_offset_reset=task.kafka_auto_offset_reset,
+                kafka_batch_size=task.kafka_batch_size,
+                kafka_batch_timeout_ms=task.kafka_batch_timeout_ms,
+                kafka_value_format=task.kafka_value_format,
+            )
+            await kafka_manager.start(req)
+            logger.info(f"启动时自动拉起 Kafka 任务: {task.id} ({task.kafka_topic})")
+
+    except Exception as e:
+        logger.error(f"启动自动拉起 Kafka 任务失败: {e}")
+    finally:
+        db.close()
 
 
 @asynccontextmanager
@@ -144,6 +193,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"调度系统启动失败! 错误: {e}")
 
+    # 启动时自动拉起 Kafka 任务
+    try:
+        await start_all_kafka_tasks()
+    except Exception as e:
+        logger.error(f"Kafka 常驻任务拉起失败! (已安全跳过,后续任务可能无法启动): {e}")
+
     # yield 前记录启动完成时间
     end_time = time.time()
     elapsed = end_time - start_time
@@ -152,6 +207,9 @@ async def lifespan(app: FastAPI):
 
     yield  # <- 应用开始运行.  yield 之后的代码会在应用关闭时执行
     # 关闭前如果有资源要释放可以写这里(例如关闭数据库连接、Redis 连接等)
+
+    # 关闭 Kafka 任务
+    await kafka_manager.stop_all()
 
     logger.info("正在执行资源释放并关机...")
     # 停掉定时器
