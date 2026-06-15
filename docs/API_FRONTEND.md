@@ -730,6 +730,7 @@ const timer = setInterval(async () => {
         "source_id": "aabbccdd...",
         "topic_or_table": "users",
         "status": 1,
+        "db_type": "mysql",
         "run_status": "running",
         "current_log_id": "log-uuid-xxx",
         "sync_mode": "overwrite",
@@ -743,9 +744,11 @@ const timer = setInterval(async () => {
       },
       {
         "id": "550e8400e29b41d4...",
-        "task_name": "FTP文件采集",
+        "task_name": "Kafka流消费",
+        "source_id": "kafka-src-id",
         "status": 1,
-        "run_status": "idle",
+        "db_type": "kafka",
+        "run_status": "running",
         "current_log_id": null
       }
     ]
@@ -756,25 +759,32 @@ const timer = setInterval(async () => {
 | run_status | 含义 | 触发条件 | 前端按钮状态 |
 |-----------|------|----------|------------|
 | `idle` | 空闲 | 没有任何日志，或最近一次日志是 `success`/`failed`/`cancelled` | 🔵 **[执行]** |
-| `pending` | 排队中 | API 已下发，但 Worker 尚未拿到锁 | ⏳ 按钮全部置灰，不可操作 |
-| `running` | 运行中 | Worker 已获取锁并开始执行 | 🟡 **[暂停]** + **[取消]** |
-| `paused` | 已暂停 | 用户点击暂停，引擎在当前批次后中断，水位线已保存 | 🟠 **[恢复]** |
-| `cancelled` | 已取消 | 用户点击取消，引擎立即终止，水位线丢失 | 任务下次执行时自动变回 `idle` |
+| `pending` | 排队中 | API 已下发，但 Worker 尚未拿到锁 | ⏳ 按钮全部置灰 |
+| `running` | 运行中 | Worker 已获取锁（常规任务）或 Kafka Consumer 正在消费 | 🟡 **[暂停]** + **[取消]** |
+| `paused` | 已暂停 | 用户点击暂停，引擎在当前批次后中断 | 🟠 **[恢复]** |
+| `cancelled` | 已取消 | 用户点击取消，引擎立即终止 | 自动变回 `idle` |
+| `stopped` | 已停止 | **仅 Kafka 任务**，Consumer 未在运行 | 🔵 **[启动]** |
 | `success` | 已完成 | 最近一次执行成功 | 自动变回 `idle` |
 | `failed` | 已失败 | 最近一次执行失败 | 自动变回 `idle` |
 
 **`run_status` 判定逻辑（后端）：**
 
 ```
-查该任务最新一条 sys_task_log
+第一步：查数据源类型 (source_type_map)
   ↓
-  无日志 → idle
-  有日志 → 看 status 字段
-    ├─ pending / running / paused / cancelled → 直接用这个值
-    └─ success / failed → idle（说明任务已结束，当前空闲）
+  db_type == "kafka" ?
+    ├─ 是 → 直接查 kafka_manager.status() 内存状态
+    │       ├─ running → "running"
+    │       └─ stopped → "stopped"
+    └─ 否 → 常规任务
+            ├─ 查 Redis 锁 sync_task_lock:{task_id}
+            │   └─ 存在 → "running"（即使 DB 日志已结束）
+            └─ 锁不存在 → 查最新 TaskLog
+                ├─ pending/running/paused/cancelled → 直接用
+                └─ success/failed → "idle"
 ```
 
-> `run_status` 由后端自动注入，前端无需查询日志表。`current_log_id` 可用于直接跳转日志详情页。
+> `db_type` 由后端批量查询 DataSource 表后动态注入，前端无需额外请求。`current_log_id` 仅对常规任务有效（Kafka 常驻消费无日志 ID 概念）。
 
 ---
 
@@ -2910,6 +2920,30 @@ POST /tsync/kafka/status
 
 ---
 
+### Kafka Consumer 生命周期（核心规则）
+
+| 操作 | DB `status` 变化 | Consumer 行为 | 说明 |
+|------|-----------------|---------------|------|
+| 新建任务 | `status=1` | **不启动** | 仅存入数据库，需手动点 `/kafka/start` |
+| 点击「启用」 | `0→1` | **不启动** | 只改数据库，把启动权交给前端按钮 |
+| 点击「停用」 | `1→0` | **强制停止** | 数据库改为 0 + 立即调用 `kafka_manager.stop()` |
+| 点击「删除」 | 记录删除 | **先停后删** | 先调用 `kafka_manager.stop()`，再删除数据库记录 |
+| `/kafka/start` | 不变 | **启动** | 手动控制按钮，仅当 status=1 时生效 |
+| `/kafka/stop` | 不变 | **停止** | 手动控制按钮 |
+| 系统重启 | 不变 | **自动拉起** | 启动时自动启动所有 `status=1` 的 Kafka 任务 |
+
+**设计原则：**
+
+```
+新建 → 不自动跑，等用户确认
+启用 → 只开权限，不自动跑
+停用 → 立刻停，切断资源
+删除 → 先停后删，不留孤儿进程
+重启 → 全部恢复，无需手动
+```
+
+---
+
 ### 4. Kafka 消费流程图
 
 ```
@@ -2996,7 +3030,65 @@ LIMIT 50;
 | 监控 | InfluxDB `kafka_monitor` measurement，包含 consumed/Lag/elapsed_ms |
 | 暂停/取消 | 调用 `/kafka/stop` 停止消费，调用 `/kafka/start` 重新启动 |
 
-### 9. 注意事项
+---
+
+### 9. Kafka 消费监控时序数据
+
+`POST /tsync/monitor/trend`
+
+从 InfluxDB 查询 Kafka 任务的消费速率和耗时趋势，用于 Echarts 可视化。
+
+```json
+{"task_id": "e480c7cb0ff245a7bbb6685d23615182", "minutes": 30}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| task_id | string | ✅ | 任务 UUID（32位） |
+| minutes | int | ❌ | 查询过去多少分钟的数据，默认 `30`，最小 `1` |
+
+响应：
+
+```json
+{
+  "code": 1,
+  "msg": "获取监控数据成功",
+  "data": {
+    "xAxis": ["15:22:00", "15:22:10", "15:22:20"],
+    "series": {
+      "consumed": [100, 200, 150],
+      "elapsed_ms": [3200, 2800, 4500]
+    }
+  }
+}
+```
+
+| 返回字段 | 说明 |
+|----------|------|
+| `xAxis` | 时间点数组（HH:MM:SS 格式），直接用于 Echarts X 轴 |
+| `series.consumed` | 每个批次消费的消息条数 |
+| `series.elapsed_ms` | 每个批次耗时（毫秒） |
+
+> 数据来源：Kafka 引擎每完成一次攒批写入，向 InfluxDB `kafka_monitor` measurement 写入 consumed（条数）和 elapsed_ms（耗时）。
+
+**Echarts 前端示例：**
+
+```javascript
+// 左 Y 轴：消费条数（柱状图）
+const consumedSeries = {
+  name: '消费条数', type: 'bar', yAxisIndex: 0,
+  data: data.series.consumed
+};
+// 右 Y 轴：耗时（折线图）
+const elapsedSeries = {
+  name: '耗时(ms)', type: 'line', yAxisIndex: 1,
+  data: data.series.elapsed_ms
+};
+```
+
+---
+
+### 10. 注意事项
 
 系统现在是一个“批处理（ARQ 调度）+ 流处理（Kafka 常驻）”双引擎并存的混合架构，同时兼容了 7 种以上的异构协议
 
