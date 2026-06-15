@@ -23,8 +23,10 @@ def build_db_url(source_data) -> str:
     driver_map = {
         "mysql": "mysql+pymysql",
         "postgresql": "postgresql+psycopg2",
-        "oracle": "oracle+cx_oracle",
-        "dm": "dm+dmPython"
+        "oracle": "oracle+oracledb",
+        "dm": "dm+dmPython",
+        "sqlserver":  "mssql+pymssql",
+
     }
 
     driver = driver_map.get(db_type)
@@ -42,6 +44,43 @@ def build_db_url(source_data) -> str:
             password=password,
             host=source_data.host,
             port=source_data.port,
+        )
+    # Oracle 默认使用 service_name 模式 (与 sync_service 保持一致)
+    elif db_type == "oracle":
+        db_name = getattr(source_data, "db_name", "")
+        if db_name:
+            url = URL.create(
+                drivername=driver,
+                username=username,
+                password=password,
+                host=source_data.host,
+                port=source_data.port,
+                query={"service_name": db_name}
+            )
+        else:
+            sid = config.get("sid", "ORCL")
+            url = URL.create(
+                drivername=driver,
+                username=username,
+                password=password,
+                host=source_data.host,
+                port=source_data.port,
+                database=sid
+            )
+    # SQL Server: 支持命名实例 (通过 config_json.instance)
+    elif db_type == "sqlserver":
+        instance = config.get("instance")
+        safe_password = quote_plus(password)
+        if instance:
+            return f"mssql+pymssql://{username}:{safe_password}@{source_data.host}\\{instance}/{source_data.db_name}?charset=utf8"
+        url = URL.create(
+            drivername=driver,
+            username=username,
+            password=password,
+            host=source_data.host,
+            port=source_data.port,
+            database=source_data.db_name,
+            query={"charset": "utf8"}
         )
     else:
         url = URL.create(
