@@ -5,7 +5,7 @@
 # @LastModified: 2026/6/5
 # Copyright (c) 2026 by 胡H, All Rights Reserved.
 # @desc: 数据库全量同步服务: 反射源库结构
-
+import os
 import time
 from datetime import datetime
 
@@ -78,7 +78,21 @@ class DatabaseSyncEngine:
                         f"@{self.req.host}\\{instance}/{self.req.db_name}?charset=utf8")
             return (f"mssql+pymssql://{self.req.username}:{safe_password}"
                     f"@{self.req.host}:{self.req.port or 1433}/{self.req.db_name}?charset=utf8")
+        elif db_type == "sqlite":
+            # SQLite 没有 host/port/用户名/密码
+            # db_name 字段存文件绝对路径，如 /data/mydb.sqlite3
+            db_file = self.req.db_name
+            if not db_file:
+                raise ValueError("SQLite 采集必须在 db_name 字段填写数据库文件的绝对路径")
 
+            # 统一转为绝对路径格式的连接串
+            if not db_file.startswith("/") and not (len(db_file) > 1 and db_file[1] == ":"):
+                # 相对路径补充为绝对路径
+                db_file = os.path.abspath(db_file)
+
+            # 反斜杠转正斜杠：f-string 中的 \n \t 等是真实转义序列,会破坏路径
+            db_file = db_file.replace("\\", "/")
+            return f"sqlite:///{db_file}?timeout=15"
         else:
             raise ValueError(f"暂不支持的数据库类型: {self.req.db_type}")
 
@@ -130,6 +144,28 @@ class DatabaseSyncEngine:
             oracle_schema = self.req.username.upper()
             reflect_kwargs["schema"] = oracle_schema
             logger.info(f"Oracle 模式: 指定 schema={oracle_schema}")
+
+        # SQLite 特殊处理：不支持 only 参数,先全量反射再过滤
+        if self.req.db_type.lower() == "sqlite":
+            logger.info("SQLite 模式: 全量反射后按指定表名过滤")
+            self.source_metadata.reflect(bind=self.source_engine)
+
+            if self.req.sync_tables:
+                # 手动过滤，只保留用户指定的表
+                all_tables = set(self.source_metadata.tables.keys())
+                target_tables = set(self.req.sync_tables)
+                missing = target_tables - all_tables
+                if missing:
+                    logger.warning(f"SQLite 中不存在以下表: {missing}")
+
+                # 从 metadata 中移除不需要的表
+                to_remove = all_tables - target_tables
+                for tname in to_remove:
+                    self.source_metadata.remove(self.source_metadata.tables[tname])
+
+            table_names = list(self.source_metadata.tables.keys())
+            logger.info(f"成功读取到 {len(table_names)} 张源表: {table_names}")
+            return table_names
 
         # sync_tables 指定了就只反射这些表, 否则整库反射
         if self.req.sync_tables:
@@ -426,6 +462,13 @@ class DatabaseSyncEngine:
                     val = val.read()
                 except Exception:
                     val = None
+
+            # 拦截并解码 bytes 类型, 适配 BLOB/CLOB 或者某些特殊类型
+            if isinstance(val, bytes):
+                try:
+                    val = val.decode("utf-8")
+                except UnicodeDecodeError:
+                    val = val.hex()
 
             # 源数据有值, 且不是 None, 直接保留
             if val is not None:
