@@ -2768,3 +2768,267 @@ WALK ifInOctets → {"1": 1234567, "2": 8901234}
 | 暂停/取消 | 支持 | 支持 |
 | 定时调度 | 推荐 `interval_min` | 推荐 `interval_min` |
 
+
+
+---
+
+## 十二、Kafka 流式采集专项
+
+> 常驻 Consumer 模式，启动后持续消费。攒批写入 PG，offset 写入成功后才 commit。消费速率写入 InfluxDB。
+
+```
+FastAPI 启动时 (lifespan)
+  ↓
+KafkaConsumerManager
+  ├── 读取所有 db_type="kafka" 且启用的任务
+  └── 为每个任务启动一个 asyncio.Task（长期运行的消费循环）
+
+消费循环 (KafkaSyncEngine.run)
+  ↓
+poll消息 → 攒批 → 写入PG（数据）+ InfluxDB（消费速率/Lag监控）
+  ↓
+写入成功后才 commit offset（Kafka自身的offset机制，天然持久化）
+```
+
+
+
+### 1. 创建 Kafka 数据源
+
+Kafka 的连接信息（bootstrap servers 等）直接在任务中配置，数据源仅做标识：
+
+```json
+{
+  "name": "工业传感器Kafka",
+  "type": "kafka",
+  "host": "0.0.0.0",
+  "port": 9092,
+  "db_name": "default",
+  "username": "",
+  "password": ""
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | ✅ | 数据源别名 |
+| type | string | ✅ | 固定 `"kafka"` |
+| host | string | ✅ | 随便填，做标识用 |
+| port | int | ✅ | 随便填 |
+| db_name | string | ✅ | 随便填 |
+
+---
+
+### 2. 创建 Kafka 消费任务
+
+```json
+{
+  "task_name": "传感器数据流消费",
+  "source_id": "69fa04c0d1bb48f7ae594bd75efb04f4",
+  "kafka_bootstrap_servers": "127.0.0.1:9092",
+  "kafka_topic": "test_sensor_topic",
+  "kafka_group_id": "test_group_01",
+  "kafka_auto_offset_reset": "latest",
+  "kafka_batch_size": 100,
+  "kafka_batch_timeout_ms": 5000,
+  "kafka_value_format": "json",
+  "target_table": "kafka_test_data",
+  "collect_mode": "full",
+  "sync_mode": "insert",
+  "status": 1
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| task_name | string | ✅ | 任务名称 |
+| source_id | string | ✅ | Kafka 数据源 ID |
+| kafka_bootstrap_servers | string | ✅ | Kafka 集群地址，如 `127.0.0.1:9092` |
+| kafka_topic | string | ✅ | 订阅的 Topic |
+| kafka_group_id | string | ❌ | 消费组 ID，不填自动用 `dataflux_{task_id}` |
+| kafka_auto_offset_reset | string | ❌ | `latest`（默认，只消费新消息）/ `earliest`（从最早的 offset 开始） |
+| kafka_batch_size | int | ❌ | 攒批大小，满批或超时即写入一次，默认 `500` |
+| kafka_batch_timeout_ms | int | ❌ | 攒批超时毫秒数，默认 `5000`（5秒） |
+| kafka_value_format | string | ❌ | 消息体解析格式：`json`（默认）/ `text` |
+| target_table | string | ❌ | PG 目标表名，不传默认 `kafka_{topic名}` |
+| collect_mode | string | ❌ | 固定 `"full"` |
+| status | int | ❌ | `1`=启用，`0`=停用 |
+
+---
+
+### 3. Kafka 专属接口
+
+Kafka 不通过 `/tsync/run` 触发（那是 ARQ 一次性任务），而是通过常驻消费者管理：
+
+| 接口 | 说明 |
+|------|------|
+| `POST /tsync/kafka/start` | 启动指定任务的 Kafka Consumer |
+| `POST /tsync/kafka/stop` | 停止指定任务的 Kafka Consumer |
+| `POST /tsync/kafka/status` | 查询指定任务的 Consumer 状态 |
+
+**启动 Consumer：**
+
+```json
+POST /tsync/kafka/start
+{"task_id": "e480c7cb0ff245a7bbb6685d23615182"}
+```
+
+响应：
+
+```json
+{"code": 1, "msg": "Consumer已启动", "data": null}
+```
+
+> 系统启动时（FastAPI lifespan）会自动拉起所有启用状态的 Kafka 任务，无需手动逐个启动。
+
+**停止 Consumer：**
+
+```json
+POST /tsync/kafka/stop
+{"task_id": "e480c7cb0ff245a7bbb6685d23615182"}
+```
+
+响应：
+
+```json
+{"code": 1, "msg": "Consumer已停止", "data": null}
+```
+
+**查询状态：**
+
+```json
+POST /tsync/kafka/status
+{"task_id": "e480c7cb0ff245a7bbb6685d23615182"}
+```
+
+响应：
+
+```json
+{"code": 1, "msg": "获取成功", "data": {"status": "running"}}
+```
+
+> `status` 取值：`"running"`（运行中）/ `"stopped"`（已停止）
+
+---
+
+### 4. Kafka 消费流程图
+
+```
+FastAPI 启动 (lifespan)
+  ↓
+start_all_kafka_tasks()
+  ├── 查所有 DataSource.type="kafka" 且 CollectTask.status=1 的任务
+  └── 为每个任务调用 kafka_manager.start()
+       ↓
+  KafkaConsumerManager 为每个 task_id 创建 asyncio.Task
+       ↓
+  KafkaSyncEngine.run(stop_event)
+       ↓
+  ┌─ while not stop_event.is_set(): ──┐
+  │  consumer.getmany(最多N条, 最长T毫秒)│
+  │  ↓                                │
+  │  攒批 → PG批量写入                │
+  │  ↓                                │
+  │  写入成功 → consumer.commit()     │
+  │  ↓                                │
+  │  写 InfluxDB (消费速率/Lag)       │
+  └───────────────────────────────────┘
+       ↓
+  stop_event.set() → consumer.stop() → 优雅退出
+```
+
+---
+
+### 5. 消息体解析
+
+| kafka_value_format | 消息示例 | 存入 raw_doc |
+|-------------------|---------|-------------|
+| `json`（默认） | `{"temp":25.5,"humidity":60}` | `{"temp":25.5,"humidity":60}` |
+| `text` | `sensor_A,25.5,60` | `{"raw_text":"sensor_A,25.5,60"}` |
+| `json`（非 JSON 消息） | `invalid` | `{"raw_text":"invalid"}` — 自动降级 |
+
+---
+
+### 6. 幂等去重
+
+每条消息以 `topic + partition + offset` 的 MD5 哈希作为主键：
+
+```
+id = md5("test_sensor_topic-0-12345")
+```
+
+写入时 `ON CONFLICT (id) DO NOTHING`，重复消费（如 rebalance 导致的重复读取）不会产生脏数据。
+
+---
+
+### 7. 目标表结构
+
+```sql
+CREATE TABLE kafka_test_data (
+    id           VARCHAR(32) PRIMARY KEY,   -- topic+partition+offset 的 MD5
+    raw_doc      JSON NOT NULL,              -- 消息内容
+    collected_at VARCHAR(64)                 -- 采集时间 ISO 格式
+);
+```
+
+查询示例：
+
+```sql
+SELECT id,
+       raw_doc->>'temp' AS temperature,
+       raw_doc->>'humidity' AS humidity,
+       collected_at
+FROM kafka_test_data
+ORDER BY collected_at DESC
+LIMIT 50;
+```
+
+---
+
+### 8. Kafka 特有说明
+
+| 特性 | 说明 |
+|------|------|
+| 生命周期 | 常驻后台 `asyncio.Task`，不同于 ARQ Worker 一次性任务 |
+| offset 管理 | `enable_auto_commit=False`，手动 commit，确保写库成功的消息不会被重复消费 |
+| 并发控制 | 每个 task_id 唯一一个 Consumer，`/kafka/start` 检测到已运行则跳过 |
+| 优雅停止 | `stop_event.set()` → `consumer.stop()`，最多等待 30 秒超时强制取消 |
+| 自动拉起 | 系统启动时自动启动所有启用的 Kafka 任务 |
+| 监控 | InfluxDB `kafka_monitor` measurement，包含 consumed/Lag/elapsed_ms |
+| 暂停/取消 | 调用 `/kafka/stop` 停止消费，调用 `/kafka/start` 重新启动 |
+
+### 9. 注意事项
+
+系统现在是一个“批处理（ARQ 调度）+ 流处理（Kafka 常驻）”双引擎并存的混合架构，同时兼容了 7 种以上的异构协议
+
+**1. 两种任务的 UI 交互必须彻底分离**
+
+在渲染任务列表时，必须根据 `db_type` 彻底切分按钮逻辑：
+
+- **常规任务（SQL/API/FTP/SNMP/Socket）：**
+  - 接口映射： 走 `/api/v1/tsync/run`、`/pause`、`/resume`。
+  - UI 交互： 点击“执行”后，前端需要立刻通过 Axios 开启一个轮询（例如 `setInterval` 每 3 秒拉取一次 `/tasklog/detail`），并在页面上展示状态扭转。
+- **流式任务（Kafka）：**
+  - 接口映射： 必须专门走 `/api/v1/tsync/kafka/start` 和 `/kafka/stop`。
+  - UI 交互： 绝对不要轮询进度条！ Kafka 任务没有进度。只需要一个类似开关的 UI（Start/Stop），点击启动后，按钮变成“停止”即可。
+
+ **2. 表单按需渲染与 Payload 瘦身**
+
+在后端的 `TaskCreateReq` 里堆了将近 50 个字段，不是全发过来的。
+
+- 表单： 需要利用 Vue 的条件渲染（如 `v-if="formData.db_type === 'snmp'"`）来动态切换表单项。如果用户选了 FTP，就绝对不要在页面上展示 Socket 或 Kafka 的配置项。
+- 发送前的清洗： 在调用 Axios POST 之前，最好做一次 Payload 瘦身。比如当前是 Socket 任务，就把 `snmp_xxx`、`kafka_xxx` 的字段全部 `delete` 掉或置为 `null`，保持请求体干净。
+
+ **3. 统一的 Axios 响应拦截与纯粹的字典解析**
+
+因为我们的 FastAPI 后端为了保持灵活性，去掉了复杂的返回 Pydantic 模型强校验，所有的接口都会直接抛出纯粹且统一的字典格式：`{"code": 1, "msg": "...", "data": ...}`。
+
+- 全局拦截： 强烈建议前端在 `axios.interceptors.response` 中做全局拦截。如果 `res.data.code === 0`，直接拦截并弹出一个 Tailwind 风格的红色 Error Toast 显示 `res.data.msg`，千万不要让业务组件再去写冗长的 `if...else` 错误处理逻辑。
+- 防抖处理： 像“执行”、“启动”这种核心按钮，前端在发起 Axios 请求后，必须立刻进入 `loading` 状态，禁用按钮，直到后端返回响应，防止手抖重复触发导致后台排他锁冲突或并发异常。
+
+ **4. InfluxDB 监控数据与 Echarts 渲染对齐**
+
+当对接 `/monitor/trend` 等图表接口时，后端返回的是时序数组，例如 `[{"_time": "...", "request_count": 50, "avg_time_ms": 42.1}]`。
+
+- 时间轴处理： 在将这些数据喂给 Echarts 之前，注意处理 ISO 8601 时间格式（`_time`）。将 UTC 时间统一格式化为本地时间（如 `YYYY-MM-DD HH:mm`）再作为 X 轴。
+- 双 Y 轴设计： 像 Socket/API/Kafka 的监控，通常有“调用量/消费量”和“延迟（ms）”两个维度，建议图表采用左侧柱状图（量）、右侧折线图（延迟）的双 Y 轴设计，这样大盘展示最具视觉冲击力。
+
