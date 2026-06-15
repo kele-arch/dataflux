@@ -57,6 +57,28 @@ class DatabaseSyncEngine:
             return f"postgresql+psycopg2://{self.req.username}:{safe_password}@{self.req.host}:{self.req.port}/{self.req.db_name}"
         elif db_type == "dm":
             return f"dm+dmPython://{self.req.username}:{safe_password}@{self.req.host}:{self.req.port}"
+
+        elif db_type == "oracle":
+            service_name = self.req.db_name
+            if service_name:
+                return (f"oracle+oracledb://{self.req.username}:{safe_password}"
+                        f"@{self.req.host}:{self.req.port or 1521}"
+                        f"/?service_name={service_name}")
+            else:
+                # 无 db_name 时回退到 SID 模式, 优先从 config_json 取 sid, 兜底用 ORCL
+                sid = (self.req.config_json or {}).get("sid", "ORCL") if self.req.config_json else "ORCL"
+                return (f"oracle+oracledb://{self.req.username}:{safe_password}"
+                        f"@{self.req.host}:{self.req.port or 1521}/{sid}")
+
+        elif db_type == "sqlserver":
+            # SQL Server 实例名(非默认端口)可通过 config_json={"instance":"MSSQLSERVER"} 指定
+            instance = (self.req.config_json or {}).get("instance") if self.req.config_json else None
+            if instance:
+                return (f"mssql+pymssql://{self.req.username}:{safe_password}"
+                        f"@{self.req.host}\\{instance}/{self.req.db_name}?charset=utf8")
+            return (f"mssql+pymssql://{self.req.username}:{safe_password}"
+                    f"@{self.req.host}:{self.req.port or 1433}/{self.req.db_name}?charset=utf8")
+
         else:
             raise ValueError(f"暂不支持的数据库类型: {self.req.db_type}")
 
@@ -103,6 +125,12 @@ class DatabaseSyncEngine:
         if self.req.db_type.lower() == "dm":
             reflect_kwargs["schema"] = self.req.username.upper()
 
+        # Oracle专属: 反射时指定 schema, 且必须大写
+        if self.req.db_type.lower() == "oracle":
+            oracle_schema = self.req.username.upper()
+            reflect_kwargs["schema"] = oracle_schema
+            logger.info(f"Oracle 模式: 指定 schema={oracle_schema}")
+
         # sync_tables 指定了就只反射这些表, 否则整库反射
         if self.req.sync_tables:
             if self.req.db_type.lower() == "dm":
@@ -124,6 +152,28 @@ class DatabaseSyncEngine:
                     logger.error("所有指定的表在源库中都不存在")
                     return []
                 logger.info(f"采用 [指定多表] 模式, 物理表名: {only_tables}")
+
+            # Oracle 的物理名探查逻辑与达梦类似 ---
+            elif self.req.db_type.lower() == "oracle":
+                from sqlalchemy import inspect as sa_inspect
+                inspector = sa_inspect(self.source_engine)
+                actual_tables = inspector.get_table_names(schema=self.req.username.upper())
+
+                table_map = {t.lower(): t for t in actual_tables}
+                only_tables = []
+                for t in self.req.sync_tables:
+                    physical = table_map.get(t.lower())
+                    if physical:
+                        only_tables.append(physical)
+                    else:
+                        logger.warning(f"源库中不存在表: {t}, 已跳过")
+
+                if not only_tables:
+                    logger.error("所有指定的表在源库中都不存在")
+                    return []
+                logger.info(f"采用 [指定多表] 模式, 物理表名: {only_tables}")
+                reflect_kwargs["only"] = only_tables
+
             else:
                 only_tables = self.req.sync_tables
                 logger.info(f"采用 [指定多表] 模式, 目标: {only_tables}")
@@ -144,8 +194,8 @@ class DatabaseSyncEngine:
         # 先精确匹配
         if source_name in mapping:
             return mapping[source_name]
-        # 达梦适配: 大小写不敏感匹配 (用户可能传 DEVICE, 实际是 device)
-        if self.req.db_type.lower() == "dm":
+        # DM/Oracle 适配: 大小写不敏感匹配 (用户可能传 DEVICE, 实际物理表名是 DEVICE)
+        if self.req.db_type.lower() in ("dm", "oracle"):
             lower_name = source_name.lower()
             for k, v in mapping.items():
                 if k.lower() == lower_name:
@@ -176,8 +226,8 @@ class DatabaseSyncEngine:
                 if hasattr(col_type, 'collation'):
                     col_type.collation = None
 
-                # 达梦适配: 列名转小写 (达梦默认大写, PG 默认小写)
-                col_name = c.name.lower() if self.req.db_type.lower() == "dm" else c.name
+                # DM/Oracle 适配: 列名转小写 (达梦/Oracle 默认大写, PG 默认小写)
+                col_name = c.name.lower() if self.req.db_type.lower() in ("dm", "oracle") else c.name
 
                 # 创建全新的 Column (避免 Column.copy() 浅拷贝污染源表元数据)
                 new_col = SAColumn(col_name, col_type, nullable=True)
@@ -280,8 +330,8 @@ class DatabaseSyncEngine:
 
                     # 如果是增量模式, 找出这批数据中的最大值
                     if self.req.collect_mode in ["inc_id", "inc_time"] and self.req.incremental_column:
-                        # 达梦适配: 行数据中的 key 是大写, 需要转换
-                        wm_col = self.req.incremental_column.upper() if self.req.db_type.lower() == "dm" else self.req.incremental_column
+                        # DM/Oracle 适配: 行数据中的 key 是大写, 需要转换
+                        wm_col = self.req.incremental_column.upper() if self.req.db_type.lower() in ("dm", "oracle") else self.req.incremental_column
                         val = row_dict.get(wm_col)
                         if val is not None:
                             if current_max_watermark is None or val > current_max_watermark:
@@ -334,9 +384,9 @@ class DatabaseSyncEngine:
             logger.info("采用 [全量] 模式进行提取")
             return base_query
 
-        # 达梦适配: 列名强转大写 (达梦默认大写存储)
+        # DM/Oracle 适配: 列名强转大写 (达梦/Oracle 默认大写存储)
         col_name = task_config.incremental_column
-        if task_config.db_type.lower() == "dm" and col_name:
+        if task_config.db_type.lower() in ("dm", "oracle") and col_name:
             col_name = col_name.upper()
 
         # 2. 增量 - 自增列模式
@@ -360,15 +410,22 @@ class DatabaseSyncEngine:
         解决跨库同步时的列缺失、NOT NULL 冲突和类型转换崩溃问题
         """
         cleaned = {}
-        is_dm = self.req.db_type.lower() == "dm"
+        is_upper_source = self.req.db_type.lower() in ("dm", "oracle")
 
         for col in target_table.columns:
             col_name = col.name
-            # 达梦适配: 源数据 key 是大写, 目标列名是小写, 需要双向匹配
+            # DM/Oracle 适配: 源数据 key 是大写, 目标列名是小写, 需要双向匹配
             # 不能用 or, 因为 0、""、False 会被当作 falsy 丢弃
             val = row_dict.get(col_name)
-            if val is None and is_dm:
+            if val is None and is_upper_source:
                 val = row_dict.get(col_name.upper())
+
+            # 拦截并读取 Oracle 的 LOB 对象
+            if val is not None and hasattr(val, "read"):
+                try:
+                    val = val.read()
+                except Exception:
+                    val = None
 
             # 源数据有值, 且不是 None, 直接保留
             if val is not None:
