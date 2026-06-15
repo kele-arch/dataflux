@@ -40,6 +40,7 @@ class DBSyncReq(BaseDecryptReq):
 
     # 选填, 有默认值
     charset: Optional[str] = Field("utf8mb4", description="字符集")
+    config_json: Optional[dict] = Field(default=None, description="扩展配置(如Oracle SID、SQLServer实例名)")
     target_table: Optional[str] = Field(default=None, description="指定表名，不填则整库同步")
     sync_tables: Optional[List[str]] = Field(default=None, description="指定同步的表名列表，为空则全库同步")
     table_mapping: Optional[dict] = Field(default=None, description="表名映射: {'源表名':'目标表名'}，不传则同名")
