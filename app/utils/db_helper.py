@@ -26,6 +26,7 @@ def build_db_url(source_data) -> str:
         "oracle": "oracle+oracledb",
         "dm": "dm+dmPython",
         "sqlserver":  "mssql+pymssql",
+        "sqlite": "sqlite",
 
     }
 
@@ -82,6 +83,14 @@ def build_db_url(source_data) -> str:
             database=source_data.db_name,
             query={"charset": "utf8"}
         )
+    # SQLite: 文件数据库，不需要host/port/用户名/密码，db_name存文件路径
+    elif db_type == "sqlite":
+        db_file = getattr(source_data, "db_name", "")
+        if not db_file:
+            raise ValueError("SQLite 数据源的 db_name 必须填写数据库文件的绝对路径")
+        # 统一转为正斜杠，兼容 Windows 和 POSIX
+        db_file = db_file.replace("\\", "/")
+        return f"sqlite:///{db_file}"
     else:
         url = URL.create(
             drivername=driver,
