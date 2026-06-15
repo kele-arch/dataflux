@@ -41,4 +41,5 @@ dependencies = [
     "snmpsim>=1.2.2",
     "pysmi>=2.0.0",
     "ply>=3.11",
+    "aiokafka>=0.14.0",
 ]
