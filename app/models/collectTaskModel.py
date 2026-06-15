@@ -24,7 +24,8 @@ class CollectTask(Base, BaseModelMixin):
     # 完整的 SA2.0 逻辑关联
     source_id: Mapped[str] = mapped_column(String(32), comment="关联的数据源ID")
 
-    topic_or_table: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="custom_sql模式下目标库写入表名")
+    topic_or_table: Mapped[str | None] = mapped_column(String(100), nullable=True,
+                                                       comment="custom_sql模式下目标库写入表名")
 
     schedule_type: Mapped[str] = mapped_column(String(20), default="none",
                                                comment="调度类型: none, cron, interval_min, daily, weekly")
@@ -53,7 +54,8 @@ class CollectTask(Base, BaseModelMixin):
     custom_sql: Mapped[str | None] = mapped_column(Text)
 
     # 目标库配置 (MongoDB -> MongoDB 时需要)
-    target_type: Mapped[str] = mapped_column(String(20), default="postgresql", comment="目标库类型: postgresql 或 mongodb")
+    target_type: Mapped[str] = mapped_column(String(20), default="postgresql",
+                                             comment="目标库类型: postgresql 或 mongodb")
     target_host: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="目标库主机")
     target_port: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="目标库端口")
     target_username: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="目标库账号")
@@ -61,7 +63,8 @@ class CollectTask(Base, BaseModelMixin):
     target_db_name: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="目标库名")
 
     # FTP 采集配置
-    ftp_url: Mapped[str | None] = mapped_column(String(500), nullable=True, comment="FTP完整URL,传了则自动解析覆盖连接参数")
+    ftp_url: Mapped[str | None] = mapped_column(String(500), nullable=True,
+                                                comment="FTP完整URL,传了则自动解析覆盖连接参数")
     ftp_path: Mapped[str | None] = mapped_column(String(500), nullable=True, comment="FTP远程文件路径")
     ftp_passive: Mapped[bool] = mapped_column(Integer, default=1, comment="是否被动模式(1是 0否)")
     file_parse: Mapped[bool] = mapped_column(Integer, default=0, comment="是否解析文件入库(1是 0否)")
@@ -95,6 +98,15 @@ class CollectTask(Base, BaseModelMixin):
     socket_recv_size: Mapped[int] = mapped_column(Integer, default=4096, comment="缓冲区大小")
     socket_terminator: Mapped[str | None] = mapped_column(String(20), nullable=True, comment="结束符")
     socket_response_format: Mapped[str] = mapped_column(String(10), default="json", comment="响应格式")
+
+    # Kafka 采集配置
+    kafka_bootstrap_servers: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="Kafka地址")
+    kafka_topic: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="订阅Topic")
+    kafka_group_id: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="消费组ID")
+    kafka_auto_offset_reset: Mapped[str | None] = mapped_column(String(20), nullable=True, default="latest")
+    kafka_batch_size: Mapped[int | None] = mapped_column(Integer, nullable=True, default=500)
+    kafka_batch_timeout_ms: Mapped[int | None] = mapped_column(Integer, nullable=True, default=5000)
+    kafka_value_format: Mapped[str | None] = mapped_column(String(20), nullable=True, default="json")
 
     def __repr__(self) -> str:
         return f"<CollectTask(task_name={self.task_name}, status={self.status})>"
