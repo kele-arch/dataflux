@@ -241,6 +241,7 @@ class TaskPageQueryReq(BaseDecryptReq):
     size: int = Field(default=10, ge=1)
     task_name: Optional[str] = Field(default=None, description="按任务名模糊搜索")
     collect_mode: Optional[str] = Field(default=None, description="按采集模式过滤")
+    db_type: Optional[str] = Field(default=None, description="按数据源类型过滤, 如 kafka, mysql")
     sort_by: Optional[Literal["create_time", "update_time", "task_name"]] = Field(default="create_time",
                                                                                   description="排序字段")
     sort_order: Optional[Literal["asc", "desc"]] = Field(default="desc", description="排序方向")

@@ -11,8 +11,10 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 
 from app.models.collectTaskModel import CollectTask
+from app.models.dataSourceModel import DataSource
 from app.models.taskLogModel import TaskLog
 from app.schemas.tsync import TaskCreateReq, TaskUpdateReq, TaskPageQueryReq
+from app.services.kafka_manager import kafka_manager
 from app.services.task_control import _get_redis
 
 
@@ -57,13 +59,22 @@ class CRUDCollectTask:
 
     def get_list(self, db: Session, req: TaskPageQueryReq) -> dict:
         """ 分页与条件查询 (支持排序), 附带每项任务的 run_status 与 db_type """
-        from app.models.dataSourceModel import DataSource
-        from app.services.kafka_manager import kafka_manager
 
         # 动态排序
         sort_col = getattr(CollectTask, req.sort_by or "create_time", CollectTask.create_time)
         order = sort_col.desc() if req.sort_order == "desc" else sort_col.asc()
-        stmt = select(CollectTask).order_by(order)
+
+        # 基础查询
+        stmt = select(CollectTask)
+
+        if req.db_type:
+            stmt = stmt.join(
+                DataSource,
+                CollectTask.source_id == DataSource.id
+            ).where(DataSource.type == req.db_type)
+
+        # 挂载排序
+        stmt = stmt.order_by(order)
 
         # 动态条件过滤
         if req.task_name:
@@ -71,7 +82,7 @@ class CRUDCollectTask:
         if req.collect_mode:
             stmt = stmt.where(CollectTask.collect_mode == req.collect_mode)
 
-        # 统计总数
+        # 统计总数 (因为我们在前面加了 join，这里的 count 会极其精准)
         total_stmt = select(func.count()).select_from(stmt.subquery())
         total = db.execute(total_stmt).scalar() or 0
 
