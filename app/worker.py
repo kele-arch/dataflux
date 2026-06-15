@@ -75,6 +75,7 @@ async def run_sync_job(ctx, task_id: str):
             username=source.username,
             password=source.password,
             db_name=db_name,
+            config_json=getattr(source, "config_json", None),
             target_table=task.topic_or_table,
             sync_tables=task.sync_tables,
             table_mapping=task.table_mapping,
