@@ -29,7 +29,7 @@ class DBSyncReq(BaseDecryptReq):
     # 对外接口无影响，仅供后台 Worker 和 Engine 流转使用
     task_id: Optional[str] = Field(default=None, description="任务唯一标识(内部流转专用)")
 
-    db_type: Literal["mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket", "kafka"] = Field(
+    db_type: Literal["mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket", "kafka", "sqlite"] = Field(
         ...,
         description="数据库类型")
     host: str = Field(..., description="主机地址 IP")
