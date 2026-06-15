@@ -12,12 +12,13 @@ from sqlalchemy import select, delete
 from sqlalchemy.orm import Session
 
 from app.core import arq_pool as arq_module
+from app.core.influx_client import get_influx_client
 from app.crud.crud_tsync import crud_task
 from app.models.collectTaskModel import CollectTask
 from app.models.dataSourceModel import DataSource
 from app.models.taskLogModel import TaskLog
 from app.schemas.tsync import DBSyncReq, TaskIdReq, TaskUpdateReq, TaskCreateReq, TaskPageQueryReq, TaskPageOut, \
-    TaskOut, DashboardOut, TaskStatusReq
+    TaskOut, DashboardOut, TaskStatusReq, MonitorTrendReq
 from app.schemas.response import BaseResponse
 from app.services.kafka_manager import kafka_manager, _build_kafka_req
 from app.services.sync_service import sync_database_architecture_and_data, DatabaseSyncEngine
@@ -316,5 +317,63 @@ async def kafka_stop(req: TaskIdReq):
 @router.post("/kafka/status", summary="查询Kafka消费状态", response_model=BaseResponse)
 async def kafka_status(req: TaskIdReq):
     return BaseResponse(data={"status": kafka_manager.status(req.task_id)}, msg="获取成功")
+
+
+# endregion
+
+
+# region ----- kafka的influx数据获取 ----
+@router.post("/monitor/trend", summary="获取队列任务运行监控时序数据", response_model=BaseResponse)
+def get_task_monitor_trend(req: MonitorTrendReq):
+    """
+
+    """
+    from app.core.influx_client import get_influx_client
+    influx = get_influx_client()
+
+    # 简单的防注入处理
+    task_id_safe = req.task_id.replace("'", "")
+
+    try:
+        # InfluxDB 3.x 标准 SQL
+        query_sql = f"""
+                    SELECT 
+                        time, 
+                        consumed, 
+                        elapsed_ms
+                    FROM "kafka_monitor" 
+                    WHERE task_id = '{task_id_safe}' 
+                      AND time >= now() - interval '{req.minutes} minutes'
+                    ORDER BY time ASC
+                """
+
+        raw_data = influx.query_sql(query_sql)
+
+        times = []
+        consumed_list = []
+        lag_list = []
+        elapsed_list = []
+
+        for row in raw_data:
+            raw_time = str(row.get("time", ""))
+            time_str = raw_time.split("T")[1][:8] if "T" in raw_time else raw_time
+
+            times.append(time_str)
+            consumed_list.append(row.get("consumed", 0))
+            lag_list.append(row.get("lag", 0))
+            elapsed_list.append(row.get("elapsed_ms", 0))
+
+        chart_data = {
+            "xAxis": times,
+            "series": {
+                "consumed": consumed_list,
+                "elapsed_ms": elapsed_list
+            }
+        }
+
+        return BaseResponse(code=1, msg="获取监控数据成功", data=chart_data)
+
+    except Exception as e:
+        return BaseResponse(code=0, msg=f"查询 InfluxDB 监控数据失败: {str(e)}")
 
 # endregion

@@ -29,8 +29,9 @@ class DBSyncReq(BaseDecryptReq):
     # 对外接口无影响，仅供后台 Worker 和 Engine 流转使用
     task_id: Optional[str] = Field(default=None, description="任务唯一标识(内部流转专用)")
 
-    db_type: Literal["mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket", "kafka"] = Field(...,
-                                                                                                               description="数据库类型")
+    db_type: Literal["mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket", "kafka"] = Field(
+        ...,
+        description="数据库类型")
     host: str = Field(..., description="主机地址 IP")
     port: int = Field(..., description="端口")
     username: str = Field(..., description="用户名")
@@ -315,4 +316,12 @@ class DashboardOut(BaseModel):
     active_tasks: int
     today_records: int
     success_rate: float
+
+
+# endregion
+
+# region ----- kafka的influx数据获取 ----
+class MonitorTrendReq(BaseModel):
+    task_id: str = Field(..., min_length=32, max_length=32, description="任务ID")
+    minutes: int = Field(default=30, ge=1, description="查询过去多少分钟的数据")
 # endregion
