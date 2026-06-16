@@ -343,27 +343,47 @@ async def kafka_status(req: TaskIdReq):
 # endregion
 
 
-# region ----- kafka的influx数据获取 ----
+# region ----- kafka/mqtt 的 influx 数据获取 ----
 @router.post("/monitor/trend", summary="获取队列任务运行监控时序数据", response_model=BaseResponse)
-def get_task_monitor_trend(req: MonitorTrendReq):
+def get_task_monitor_trend(req: MonitorTrendReq, db: Session = Depends(get_db)):
     """
-
+    自动识别 Kafka/MQTT 任务类型, 从对应的 InfluxDB measurement 查询时序数据
     """
     from app.core.influx_client import get_influx_client
-    influx = get_influx_client()
 
-    # 简单的防注入处理
+    # 查任务关联的数据源类型, 确定查询哪个 measurement
+    task = crud_task.get_by_id(db, req.task_id)
+    if not task:
+        return BaseResponse(code=0, msg="任务不存在")
+
+    source = db.execute(
+        select(DataSource).where(DataSource.id == task.source_id)
+    ).scalar_one_or_none()
+    source_type = source.type.lower() if source else ""
+
+    # 根据数据源类型选择对应的 InfluxDB measurement
+    measurement_map = {
+        "kafka": "kafka_monitor",
+        "mqtt": "mqtt_monitor",
+    }
+    measurement = measurement_map.get(source_type)
+    if not measurement:
+        return BaseResponse(
+            code=0,
+            msg=f"该任务类型 [{source_type}] 不支持实时监控, 仅 Kafka/MQTT 常驻任务可用"
+        )
+
+    influx = get_influx_client()
     task_id_safe = req.task_id.replace("'", "")
 
     try:
-        # InfluxDB 3.x 标准 SQL
         query_sql = f"""
-                    SELECT 
-                        time, 
-                        consumed, 
+                    SELECT
+                        time,
+                        consumed,
                         elapsed_ms
-                    FROM "kafka_monitor" 
-                    WHERE task_id = '{task_id_safe}' 
+                    FROM "{measurement}"
+                    WHERE task_id = '{task_id_safe}'
                       AND time >= now() - interval '{req.minutes} minutes'
                     ORDER BY time ASC
                 """
@@ -372,7 +392,6 @@ def get_task_monitor_trend(req: MonitorTrendReq):
 
         times = []
         consumed_list = []
-        lag_list = []
         elapsed_list = []
 
         for row in raw_data:
@@ -381,7 +400,6 @@ def get_task_monitor_trend(req: MonitorTrendReq):
 
             times.append(time_str)
             consumed_list.append(row.get("consumed", 0))
-            lag_list.append(row.get("lag", 0))
             elapsed_list.append(row.get("elapsed_ms", 0))
 
         chart_data = {
