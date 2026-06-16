@@ -29,7 +29,8 @@ class DBSyncReq(BaseDecryptReq):
     # 对外接口无影响，仅供后台 Worker 和 Engine 流转使用
     task_id: Optional[str] = Field(default=None, description="任务唯一标识(内部流转专用)")
 
-    db_type: Literal["mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket", "kafka", "sqlite"] = Field(
+    db_type: Literal[
+        "mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket", "kafka", "sqlite", "mqtt"] = Field(
         ...,
         description="数据库类型")
     host: str = Field(..., description="主机地址 IP")
@@ -149,6 +150,21 @@ class DBSyncReq(BaseDecryptReq):
     kafka_batch_timeout_ms: Optional[int] = Field(default=5000, description="攒批超时毫秒数")
     kafka_value_format: Optional[Literal["json", "text"]] = Field(default="json", description="消息体解析格式")
 
+    # ---- MQTT 专用 ----
+    mqtt_broker: Optional[str] = Field(default=None, description="MQTT Broker地址，如 127.0.0.1")
+    mqtt_port: Optional[int] = Field(default=1883, description="MQTT Broker端口，TLS通常用8883")
+    mqtt_topic: Optional[str] = Field(default=None, description="订阅的Topic，支持通配符 + 和 #")
+    mqtt_client_id: Optional[str] = Field(default=None, description="客户端ID，不填则自动生成")
+    mqtt_qos: Optional[int] = Field(default=1, description="服务质量: 0=最多一次 1=至少一次 2=恰好一次")
+    mqtt_clean_session: Optional[bool] = Field(default=False, description="False=断线重连补发离线消息")
+    mqtt_use_tls: Optional[bool] = Field(default=False, description="是否启用 TLS 加密连接")
+    mqtt_keepalive: Optional[int] = Field(default=60, description="心跳间隔秒数")
+    mqtt_batch_size: Optional[int] = Field(default=100, description="攒批写入大小")
+    mqtt_batch_timeout_ms: Optional[int] = Field(default=3000, description="攒批超时毫秒数")
+    mqtt_value_format: Optional[Literal["json", "text", "hex"]] = Field(
+        default="json", description="消息体解析格式"
+    )
+
 
 # region ---- 任务管理 ----
 class TaskCreateReq(BaseDecryptReq):
@@ -220,6 +236,19 @@ class TaskCreateReq(BaseDecryptReq):
     kafka_batch_size: Optional[int] = Field(default=500, description="攒批大小")
     kafka_batch_timeout_ms: Optional[int] = Field(default=5000, description="攒批超时毫秒")
     kafka_value_format: Optional[str] = Field(default="json", description="json/text")
+
+    # MQTT 采集配置
+    mqtt_broker: Optional[str] = Field(default=None, description="MQTT Broker地址,如 127.0.0.1")
+    mqtt_port: Optional[int] = Field(default=1883, description="MQTT Broker端口")
+    mqtt_topic: Optional[str] = Field(default=None, description="订阅的Topic,支持通配符 + 和 #")
+    mqtt_client_id: Optional[str] = Field(default=None, description="客户端ID,不填自动生成")
+    mqtt_qos: Optional[int] = Field(default=1, description="服务质量: 0/1/2")
+    mqtt_clean_session: Optional[int] = Field(default=0, description="0=全新会话 1=持久会话(断线补发)")
+    mqtt_use_tls: Optional[int] = Field(default=0, description="是否启用TLS: 0=否 1=是")
+    mqtt_keepalive: Optional[int] = Field(default=60, description="心跳间隔秒数")
+    mqtt_batch_size: Optional[int] = Field(default=100, description="攒批大小")
+    mqtt_batch_timeout_ms: Optional[int] = Field(default=3000, description="攒批超时毫秒")
+    mqtt_value_format: Optional[str] = Field(default="json", description="消息体解析格式: json/text/hex")
 
 
 class TaskUpdateReq(TaskCreateReq):
@@ -300,6 +329,16 @@ class TaskOut(BaseModel):
     kafka_batch_size: Optional[int] = 500
     kafka_batch_timeout_ms: Optional[int] = 5000
     kafka_value_format: Optional[str] = "json"
+    mqtt_broker: Optional[str] = None
+    mqtt_port: Optional[int] = 1883
+    mqtt_topic: Optional[str] = None
+    mqtt_client_id: Optional[str] = None
+    mqtt_qos: Optional[int] = 1
+    mqtt_use_tls: Optional[int] = 0
+    mqtt_keepalive: Optional[int] = 60
+    mqtt_batch_size: Optional[int] = 100
+    mqtt_batch_timeout_ms: Optional[int] = 3000
+    mqtt_value_format: Optional[str] = "json"
 
     model_config = ConfigDict(from_attributes=True)
 
