@@ -10,6 +10,8 @@ import os
 import sys
 import asyncio
 
+from app.services.rabbitmq_manager import _build_rabbitmq_req, rabbitmq_manager
+
 # region 解决 Windows 平台 asyncio 事件循环兼容问题
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(
@@ -121,6 +123,35 @@ async def start_all_mqtt_tasks():
             req = _build_mqtt_req(task)
             await mqtt_manager.start(req)
             logger.info(f"启动时自动拉起 MQTT 任务: {task.id} ({task.mqtt_topic})")
+    finally:
+        db.close()
+
+
+async def start_all_rabbitmq_tasks():
+    """
+    启动所有状态为 1 的 RabbitMQ 任务
+    """
+    from app.db.session import SessionLocal
+    from sqlalchemy import select
+    from app.models.collectTaskModel import CollectTask
+    from app.models.dataSourceModel import DataSource
+
+    db = SessionLocal()
+    try:
+        # JOIN DataSource 过滤类型（沿用 Kafka/MQTT 的修复方式）
+        tasks = db.execute(
+            select(CollectTask)
+            .join(DataSource, CollectTask.source_id == DataSource.id)
+            .where(
+                DataSource.type == "rabbitmq",
+                CollectTask.status == 1
+            )
+        ).scalars().all()
+
+        for task in tasks:
+            req = _build_rabbitmq_req(task)
+            await rabbitmq_manager.start(req)
+            logger.info(f"启动时自动拉起 RabbitMQ 任务: {task.id} ({task.mq_queue})")
     finally:
         db.close()
 
@@ -246,6 +277,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"MQTT 常驻任务拉起失败! (已安全跳过,后续任务可能无法启动): {e}")
 
+    # 启动时自动拉起 RabbitMQ 任务
+    try:
+        await start_all_rabbitmq_tasks()
+    except Exception as e:
+        logger.error(f"RabbitMQ 常驻任务拉起失败! (已安全跳过,后续任务可能无法启动): {e}")
+
     # yield 前记录启动完成时间
     end_time = time.time()
     elapsed = end_time - start_time
@@ -260,6 +297,9 @@ async def lifespan(app: FastAPI):
 
     # 关闭 MQTT 任务
     await mqtt_manager.stop_all()
+
+    # 关闭 RabbitMQ 任务
+    await rabbitmq_manager.stop_all()
 
     logger.info("正在执行资源释放并关机...")
     # 停掉定时器
