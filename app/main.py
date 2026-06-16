@@ -7,12 +7,22 @@
 # @desc: man!!!
 
 import os
+import sys
+import asyncio
+
+# region 解决 Windows 平台 asyncio 事件循环兼容问题
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(
+        asyncio.WindowsSelectorEventLoopPolicy()
+    )
+# endregion
+
+from app.services.mqtt_manager import mqtt_manager
 
 # region 解除高并发线程池限制
 os.environ["ANYIO_MAX_THREADS"] = "150"  # 强制扩大 FastAPI 底层同步线程池
 # endregion
 
-import asyncio
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -80,6 +90,37 @@ async def start_all_kafka_tasks():
 
     except Exception as e:
         logger.error(f"启动自动拉起 Kafka 任务失败: {e}")
+    finally:
+        db.close()
+
+
+async def start_all_mqtt_tasks():
+    """
+    启动所有状态为 1 的 MQTT 任务
+    """
+    from app.db.session import SessionLocal
+    from sqlalchemy import select
+    from app.models.collectTaskModel import CollectTask
+    from app.models.dataSourceModel import DataSource
+    from app.services.mqtt_manager import mqtt_manager, _build_mqtt_req
+    from app.core import logger
+
+    db = SessionLocal()
+    try:
+        # 必须关联 sys_data_source 表过滤 type,因为 CollectTask 没有物理的 db_type 字段
+        tasks = db.execute(
+            select(CollectTask)
+            .join(DataSource, CollectTask.source_id == DataSource.id)
+            .where(
+                DataSource.type == "mqtt",
+                CollectTask.status == 1
+            )
+        ).scalars().all()
+
+        for task in tasks:
+            req = _build_mqtt_req(task)
+            await mqtt_manager.start(req)
+            logger.info(f"启动时自动拉起 MQTT 任务: {task.id} ({task.mqtt_topic})")
     finally:
         db.close()
 
@@ -199,6 +240,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Kafka 常驻任务拉起失败! (已安全跳过,后续任务可能无法启动): {e}")
 
+    # 启动时自动拉起 MQTT 任务
+    try:
+        await start_all_mqtt_tasks()
+    except Exception as e:
+        logger.error(f"MQTT 常驻任务拉起失败! (已安全跳过,后续任务可能无法启动): {e}")
+
     # yield 前记录启动完成时间
     end_time = time.time()
     elapsed = end_time - start_time
@@ -210,6 +257,9 @@ async def lifespan(app: FastAPI):
 
     # 关闭 Kafka 任务
     await kafka_manager.stop_all()
+
+    # 关闭 MQTT 任务
+    await mqtt_manager.stop_all()
 
     logger.info("正在执行资源释放并关机...")
     # 停掉定时器
@@ -316,4 +366,28 @@ if __name__ == "__main__":
     atexit.register(cleanup_worker)
 
     # 启动 Uvicorn 主进程
-    uvicorn.run(app, host=settings.SERVER_HOST, port=settings.SERVER_PORT, reload=False)
+    # uvicorn.run(app, host=settings.SERVER_HOST, port=settings.SERVER_PORT, reload=False)
+    uvicorn.run(
+        app=app,
+        host=settings.SERVER_HOST,
+        port=settings.SERVER_PORT,
+        reload=False,
+        loop="none"  # 禁用 uvicorn 内置的事件循环管理, 完全接管事件循环的创建和运行 (为了兼容 Windows)
+    )
+
+    # # 启动 Uvicorn 主进程
+    # # 完全绕开 uvicorn.run() 的封装魔法,手动接管事件循环
+    # config = uvicorn.Config(app=app, host=settings.SERVER_HOST, port=settings.SERVER_PORT, reload=False)
+    # server = uvicorn.Server(config)
+    #
+    # if sys.platform == "win32":
+    #     logger.info("检测到 Windows 环境，强制注入 SelectorEventLoop...")
+    #     loop = asyncio.SelectorEventLoop()
+    #     asyncio.set_event_loop(loop)
+    #     try:
+    #         loop.run_until_complete(server.serve())
+    #     finally:
+    #         loop.close()
+    # else:
+    #     logger.info("检测到非 Windows 环境, 使用标准 asyncio.run 启动...")
+    #     asyncio.run(server.serve())
