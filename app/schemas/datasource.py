@@ -62,4 +62,13 @@ class DataSourceOut(BaseModel):
 class DataSourcePageOut(BaseModel):
     total: int
     items: List[DataSourceOut]
+
+
+# region ---- FTP 目录勘探 ----
+class FtpExploreReq(BaseModel):
+    datasource_id: str = Field(..., min_length=32, max_length=32, description="数据源 UUID")
+    remote_path: Optional[str] = Field("/", description="勘探的远程起始路径，默认根目录 /")
+    recursive: Optional[bool] = Field(False, description="是否递归获取全量树（懒加载模式传 False）")
+    max_depth: Optional[int] = Field(2, ge=1, le=5, description="递归最大深度 (1-5)，防止深层目录卡死")
+# endregion
     model_config = ConfigDict(from_attributes=True)

@@ -5,6 +5,7 @@
 # @LastModified: 
 # Copyright (c) 2026 by 胡H, All Rights Reserved.
 # @desc:
+import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -15,9 +16,11 @@ from app.db.session import get_db
 from app.schemas.response import BaseResponse
 from app.schemas.datasource import (
     DataSourceCreateReq, DataSourceUpdateReq, DataSourceIdReq,
-    DataSourcePageQueryReq, DataSourceOut, DataSourceBase, DataSourcePageOut
+    DataSourcePageQueryReq, DataSourceOut, DataSourceBase, DataSourcePageOut,
+    FtpExploreReq
 )
 from app.crud.crud_datasource import crud_datasource
+from app.services.ftp_explorer import FtpExplorer
 from app.utils.db_helper import build_db_url, get_mongo_collections, _get_mongo_collections_detail
 
 router = APIRouter(prefix="/datasource", tags=["数据源管理"])
@@ -202,3 +205,61 @@ def get_datasource_tables_detail(req: DataSourceIdReq, db: Session = Depends(get
             engine.dispose()
     except Exception as e:
         return BaseResponse(code=0, msg=f"连接失败: {str(e)}")
+
+
+# region ---- FTP/SFTP 目录树勘探 ----
+@router.post("/ftp/dir_tree", summary="获取FTP/SFTP数据源文件目录树")
+async def get_ftp_dir_tree(req: FtpExploreReq, db: Session = Depends(get_db)):
+    """
+    通过数据源ID安全地连接远程服务器并获取文件目录树形结构
+    - 支持 FTP / FTPS / SFTP 三种协议, 通过数据源 config_json.protocol 指定
+    - 默认懒加载模式（只返回当前层级）,前端展开节点时再次请求下级
+    - 所有同步网络 I/O 切入 asyncio.to_thread, 绝不阻塞主事件循环
+    """
+
+    # 校验数据源
+    datasource = crud_datasource.get_by_id(db, req.datasource_id)
+    if not datasource:
+        return BaseResponse(code=0, msg="未找到对应的数据源记录", data=[])
+
+    if datasource.type != "ftp":
+        return BaseResponse(code=0, msg="该数据源不是 FTP/SFTP 类型,无法进行文件勘探", data=[])
+
+    config = datasource.config_json or {}
+    protocol = config.get("protocol", "ftp").lower()
+    if protocol not in ("ftp", "ftps", "sftp"):
+        return BaseResponse(code=0, msg=f"不支持的协议类型: {protocol}，可选: ftp / ftps / sftp", data=[])
+
+    # FTP/FTPS 路径去掉前导 /，SFTP 保留绝对路径
+    remote_path = req.remote_path or "/"
+    if protocol in ("ftp", "ftps") and remote_path.startswith("/"):
+        remote_path = remote_path.lstrip("/") or "."
+
+    try:
+        explorer = FtpExplorer(
+            host=datasource.host,
+            port=datasource.port,
+            username=datasource.username or "",
+            password=datasource.password or "",
+            protocol=protocol,
+        )
+
+        tree_data = await asyncio.to_thread(
+            explorer.get_dir_tree,
+            remote_path=remote_path,
+            recursive=req.recursive,
+            max_depth=req.max_depth,
+        )
+
+        return {
+            "msg": "获取成功",
+            "data": tree_data,
+        }
+
+    except Exception as e:
+        return {
+            "code": 0,
+            "msg": f"文件目录树获取失败: {str(e)}",
+            "data": [],
+        }
+# endregion
