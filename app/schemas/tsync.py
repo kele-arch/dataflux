@@ -30,7 +30,7 @@ class DBSyncReq(BaseDecryptReq):
     task_id: Optional[str] = Field(default=None, description="任务唯一标识(内部流转专用)")
 
     db_type: Literal[
-        "mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket", "kafka", "sqlite", "mqtt"] = Field(
+        "mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket", "kafka", "sqlite", "mqtt", "rabbitmq"] = Field(
         ...,
         description="数据库类型")
     host: str = Field(..., description="主机地址 IP")
@@ -165,6 +165,22 @@ class DBSyncReq(BaseDecryptReq):
         default="json", description="消息体解析格式"
     )
 
+    # ---- RabbitMQ 专用 ----
+    mq_host: Optional[str] = Field(default=None, description="RabbitMQ地址")
+    mq_port: Optional[int] = Field(default=5672, description="端口，默认5672")
+    mq_vhost: Optional[str] = Field(default="/", description="虚拟主机")
+    mq_queue: Optional[str] = Field(default=None, description="队列名称")
+    mq_exchange: Optional[str] = Field(default=None, description="交换机名称,绑定队列时用")
+    mq_exchange_type: Optional[Literal["direct", "topic", "fanout", "headers"]] = Field(
+        default="direct", description="交换机类型"
+    )
+    mq_routing_key: Optional[str] = Field(default=None, description="路由键，topic模式支持通配符 * #")
+    mq_durable: Optional[bool] = Field(default=True, description="队列是否持久化")
+    mq_prefetch_count: Optional[int] = Field(default=50, description="预取消息数量，控制内存占用")
+    mq_batch_size: Optional[int] = Field(default=100, description="攒批写入大小")
+    mq_batch_timeout_ms: Optional[int] = Field(default=3000, description="攒批超时毫秒数")
+    mq_value_format: Optional[Literal["json", "text", "hex"]] = Field(default="json", description="消息体解析格式")
+
 
 # region ---- 任务管理 ----
 class TaskCreateReq(BaseDecryptReq):
@@ -249,6 +265,20 @@ class TaskCreateReq(BaseDecryptReq):
     mqtt_batch_size: Optional[int] = Field(default=100, description="攒批大小")
     mqtt_batch_timeout_ms: Optional[int] = Field(default=3000, description="攒批超时毫秒")
     mqtt_value_format: Optional[str] = Field(default="json", description="消息体解析格式: json/text/hex")
+
+    # RabbitMQ 采集配置
+    mq_host: Optional[str] = Field(default=None, description="RabbitMQ Broker地址")
+    mq_port: Optional[int] = Field(default=5672, description="端口，默认5672")
+    mq_vhost: Optional[str] = Field(default="/", description="虚拟主机")
+    mq_queue: Optional[str] = Field(default=None, description="队列名称")
+    mq_exchange: Optional[str] = Field(default=None, description="交换机名称,绑定队列时用")
+    mq_exchange_type: Optional[str] = Field(default="direct", description="交换机类型: direct/topic/fanout/headers")
+    mq_routing_key: Optional[str] = Field(default=None, description="路由键，topic模式支持通配符 * #")
+    mq_durable: Optional[int] = Field(default=1, description="队列是否持久化")
+    mq_prefetch_count: Optional[int] = Field(default=50, description="预取消息数量")
+    mq_batch_size: Optional[int] = Field(default=100, description="攒批大小")
+    mq_batch_timeout_ms: Optional[int] = Field(default=3000, description="攒批超时毫秒")
+    mq_value_format: Optional[str] = Field(default="json", description="消息体解析格式: json/text/hex")
 
 
 class TaskUpdateReq(TaskCreateReq):
@@ -339,6 +369,19 @@ class TaskOut(BaseModel):
     mqtt_batch_size: Optional[int] = 100
     mqtt_batch_timeout_ms: Optional[int] = 3000
     mqtt_value_format: Optional[str] = "json"
+
+    mq_host: Optional[str] = None
+    mq_port: Optional[int] = 5672
+    mq_vhost: Optional[str] = "/"
+    mq_queue: Optional[str] = None
+    mq_exchange: Optional[str] = None
+    mq_exchange_type: Optional[str] = "direct"
+    mq_routing_key: Optional[str] = None
+    mq_durable: Optional[int] = 1
+    mq_prefetch_count: Optional[int] = 50
+    mq_batch_size: Optional[int] = 100
+    mq_batch_timeout_ms: Optional[int] = 3000
+    mq_value_format: Optional[str] = "json"
 
     model_config = ConfigDict(from_attributes=True)
 

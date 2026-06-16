@@ -22,6 +22,7 @@ from app.schemas.tsync import DBSyncReq, TaskIdReq, TaskUpdateReq, TaskCreateReq
 from app.schemas.response import BaseResponse
 from app.services.kafka_manager import kafka_manager, _build_kafka_req
 from app.services.mqtt_manager import mqtt_manager, _build_mqtt_req
+from app.services.rabbitmq_manager import _build_rabbitmq_req, rabbitmq_manager
 from app.services.sync_service import sync_database_architecture_and_data, DatabaseSyncEngine
 from app.com.decorators import measure_time
 from app.db.session import get_db
@@ -101,6 +102,8 @@ async def delete_task(req: TaskIdReq, db: Session = Depends(get_db)):
             await kafka_manager.stop(req.task_id)
         if source and source.type == "mqtt":
             await mqtt_manager.stop(req.task_id)
+        if source and source.type == "rabbitmq":
+            await rabbitmq_manager.stop(req.task_id)
 
     success = crud_task.delete(db, req.task_id)
     if not success:
@@ -119,6 +122,7 @@ async def change_task_status(req: TaskStatusReq, db: Session = Depends(get_db)):
     source = db.execute(select(DataSource).where(DataSource.id == task.source_id)).scalar_one_or_none()
     is_kafka = source and source.type == "kafka"
     is_mqtt = source and source.type == "mqtt"
+    is_rabbitmq = source and source.type == "rabbitmq"
 
     success = crud_task.change_status(db, req.task_id, req.status)
     if not success:
@@ -129,11 +133,9 @@ async def change_task_status(req: TaskStatusReq, db: Session = Depends(get_db)):
     # Kafka 联动运行时状态
     if is_kafka:
         if req.status == 0:
-            # 停用时: 必须强制停止底层 Consumer
             await kafka_manager.stop(req.task_id)
             logger.info(f"Kafka 任务 [{req.task_id}] 已停用, 底层 Consumer 已被强制停止")
         elif req.status == 1:
-            # 仅更新配置,不拉起进程！把启动权还给前端按钮
             logger.info(f"Kafka 任务 [{req.task_id}] 配置已启用, 等待用户手动点击启动按钮")
 
     # MQTT 联动运行时状态
@@ -142,8 +144,15 @@ async def change_task_status(req: TaskStatusReq, db: Session = Depends(get_db)):
             await mqtt_manager.stop(req.task_id)
             logger.info(f"MQTT 任务 [{req.task_id}] 已停用, 底层 Consumer 已被强制停止")
         elif req.status == 1:
-            # 仅更新配置,不拉起进程！把启动权还给前端按钮
             logger.info(f"MQTT 任务 [{req.task_id}] 配置已启用, 等待用户手动点击启动按钮")
+
+    # RabbitMQ 联动运行时状态
+    if is_rabbitmq:
+        if req.status == 0:
+            await rabbitmq_manager.stop(req.task_id)
+            logger.info(f"RabbitMQ 任务 [{req.task_id}] 已停用, 底层 Consumer 已被强制停止")
+        elif req.status == 1:
+            logger.info(f"RabbitMQ 任务 [{req.task_id}] 配置已启用, 等待用户手动点击启动按钮")
 
     label = "启用" if req.status == 1 else "停用"
     return BaseResponse(msg=f"任务已{label}")
@@ -165,8 +174,8 @@ async def run_sync_task(req: TaskIdReq, db: Session = Depends(get_db)):
     # 查数据源类型，过滤常驻流式任务
     source = db.execute(select(DataSource).where(DataSource.id == task.source_id)).scalar_one_or_none()
     source_type = source.type.lower() if source else ""
-    if source_type in ("mqtt",):
-        return BaseResponse(code=0, msg="MQTT 任务是常驻订阅任务，请使用 /tsync/mqtt/start 启动")
+    if source_type in ("mqtt", "rabbitmq"):
+        return BaseResponse(code=0, msg="MQTT/RabbitMQ 是常驻订阅任务，请使用专属 start/stop 接口启动")
     if source_type in ("kafka",):
         return BaseResponse(code=0, msg="Kafka 任务是常驻消费任务，请使用 /tsync/kafka/start 启动")
 
@@ -365,12 +374,13 @@ def get_task_monitor_trend(req: MonitorTrendReq, db: Session = Depends(get_db)):
     measurement_map = {
         "kafka": "kafka_monitor",
         "mqtt": "mqtt_monitor",
+        "rabbitmq": "rabbitmq_monitor",
     }
     measurement = measurement_map.get(source_type)
     if not measurement:
         return BaseResponse(
             code=0,
-            msg=f"该任务类型 [{source_type}] 不支持实时监控, 仅 Kafka/MQTT 常驻任务可用"
+            msg=f"该任务类型 [{source_type}] 不支持实时监控, 仅 Kafka/MQTT/RabbitMQ 常驻任务可用"
         )
 
     influx = get_influx_client()
@@ -423,7 +433,6 @@ def get_task_monitor_trend(req: MonitorTrendReq, db: Session = Depends(get_db)):
 
 @router.post("/mqtt/start", summary="启动MQTT常驻订阅", response_model=BaseResponse)
 async def mqtt_start(req: TaskIdReq, db: Session = Depends(get_db)):
-
     task = crud_task.get_by_id(db, req.task_id)
     if not task:
         return BaseResponse(code=0, msg="任务不存在")
@@ -441,14 +450,45 @@ async def mqtt_start(req: TaskIdReq, db: Session = Depends(get_db)):
 
 @router.post("/mqtt/stop", summary="停止MQTT常驻订阅", response_model=BaseResponse)
 async def mqtt_stop(req: TaskIdReq):
-
     ok = await mqtt_manager.stop(req.task_id)
     return BaseResponse(msg="订阅已停止" if ok else "订阅未在运行")
 
 
 @router.post("/mqtt/status", summary="查询MQTT订阅状态", response_model=BaseResponse)
 async def mqtt_status(req: TaskIdReq):
-
     return BaseResponse(data={"status": mqtt_manager.status(req.task_id)}, msg="获取成功")
+
+
+# endregion
+
+
+# region ---- rabbitMQ接口 ----
+
+
+@router.post("/rabbitmq/start", summary="启动RabbitMQ常驻消费", response_model=BaseResponse)
+async def rabbitmq_start(req: TaskIdReq, db: Session = Depends(get_db)):
+    task = crud_task.get_by_id(db, req.task_id)
+    if not task:
+        return BaseResponse(code=0, msg="任务不存在")
+
+    # db_type 在 DataSource 表, 需要关联查询
+    source = db.execute(select(DataSource).where(DataSource.id == task.source_id)).scalar_one_or_none()
+    if not source or source.type != "rabbitmq":
+        return BaseResponse(code=0, msg="任务关联的数据源不是RabbitMQ类型")
+
+    sync_req = _build_rabbitmq_req(task)
+    ok = await rabbitmq_manager.start(sync_req)
+    return BaseResponse(msg="消费已启动" if ok else "消费已在运行中")
+
+
+@router.post("/rabbitmq/stop", summary="停止RabbitMQ常驻消费", response_model=BaseResponse)
+async def rabbitmq_stop(req: TaskIdReq):
+    ok = await rabbitmq_manager.stop(req.task_id)
+    return BaseResponse(msg="消费已停止" if ok else "消费未在运行")
+
+
+@router.post("/rabbitmq/status", summary="查询RabbitMQ消费状态", response_model=BaseResponse)
+async def rabbitmq_status(req: TaskIdReq):
+    return BaseResponse(data={"status": rabbitmq_manager.status(req.task_id)}, msg="获取成功")
 
 # endregion
