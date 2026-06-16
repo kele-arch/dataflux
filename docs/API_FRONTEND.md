@@ -26,7 +26,7 @@
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | name | string | ✅ | 数据源名称 |
-| type | string | ✅ | 类型：`mysql` / `postgresql` / `oracle` / `sqlserver` / `dm` / `sqlite` / `mongodb` / `ftp` / `api` / `snmp` / `socket` / `kafka` |
+| type | string | ✅ | 类型：`mysql` / `postgresql` / `oracle` / `sqlserver` / `dm` / `sqlite` / `mongodb` / `ftp` / `api` / `snmp` / `socket` / `kafka` / `mqtt` |
 | host | string | ✅ | 主机地址 |
 | port | int | ✅ | 端口 |
 | db_name | string | ✅ | 数据库名 |
@@ -223,7 +223,7 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| db_type | string | ✅ | `mysql` / `postgresql` / `oracle` / `sqlserver` / `dm` / `sqlite` / `mongodb` |
+| db_type | string | ✅ | `mysql` / `postgresql` / `oracle` / `sqlserver` / `dm` / `sqlite` / `mongodb` / `mqtt` |
 | host | string | ✅ | 主机地址 |
 | port | int | ✅ | 端口 |
 | username | string | ✅ | 用户名 |
@@ -3746,7 +3746,329 @@ const elapsedSeries = {
 
 ---
 
-## 十六、数据探索 `/explorer`
+## 十六、MQTT 流式采集专项
+
+> MQTT 是物联网标准消息协议，采用**常驻订阅**模式（类似 Kafka），不走 ARQ 批处理 Worker。基于 `aiomqtt`（封装 `paho-mqtt`），支持 QoS 0/1/2、TLS 加密、持久会话（Clean Session）、自动重连和指数退避。
+
+### MQTT vs Kafka 对比
+
+| 特性 | MQTT | Kafka |
+|------|------|-------|
+| 运行模式 | 常驻 `asyncio.Task` | 常驻 `asyncio.Task` |
+| 触发方式 | `/tsync/mqtt/start` | `/tsync/kafka/start` |
+| 停止方式 | `/tsync/mqtt/stop` | `/tsync/kafka/stop` |
+| 状态查询 | `/tsync/mqtt/status` | `/tsync/kafka/status` |
+| 自动拉起 | 启动时自动启动所有启用任务 | 同 |
+| 任务列表 run_status | `running` / `stopped` | 同 |
+| 监控写入 | InfluxDB `mqtt_monitor` | InfluxDB `kafka_monitor` |
+| 幂等策略 | topic + payload MD5 主键 | topic + partition + offset MD5 主键 |
+| 断线重连 | 自动重连 + 指数退避 (5s→60s) | 不适用（Kafka Consumer 自身管理） |
+
+---
+
+### 1. 创建 MQTT 数据源
+
+MQTT 数据源不需要数据库连接，连接信息（Broker 地址、Topic 等）在任务中配置：
+
+```json
+{
+  “name”: “工厂传感器MQTT”,
+  “type”: “mqtt”,
+  “host”: “0.0.0.0”,
+  “port”: 1883,
+  “db_name”: “default”,
+  “username”: “”,
+  “password”: “”
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | ✅ | 数据源别名 |
+| type | string | ✅ | 固定 `”mqtt”` |
+| host | string | ✅ | 随便填（如 `”0.0.0.0”`），不参与连接 |
+| port | int | ✅ | 随便填（如 `0`），不参与连接 |
+| db_name | string | ✅ | 随便填 |
+| username | string | ❌ | 随便填，MQTT 认证在任务中配置 |
+| password | string | ❌ | 随便填 |
+
+> **注意：** MQTT 数据源仅做标识用途，实际 Broker 连接信息全部在任务请求体中配置。
+
+---
+
+### 2. 创建 MQTT 订阅任务
+
+```json
+{
+  “task_name”: “工厂传感器数据订阅”,
+  “source_id”: “你的MQTT数据源ID”,
+  “mqtt_broker”: “127.0.0.1”,
+  “mqtt_port”: 1883,
+  “mqtt_topic”: “factory/#”,
+  “mqtt_client_id”: “dataflux_sensor_01”,
+  “mqtt_qos”: 1,
+  “mqtt_clean_session”: 0,
+  “mqtt_use_tls”: 0,
+  “mqtt_keepalive”: 60,
+  “mqtt_batch_size”: 100,
+  “mqtt_batch_timeout_ms”: 3000,
+  “mqtt_value_format”: “json”,
+  “target_table”: “mqtt_sensor_data”,
+  “collect_mode”: “full”,
+  “sync_mode”: “insert”,
+  “status”: 1
+}
+```
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| task_name | string | ✅ | — | 任务名称 |
+| source_id | string | ✅ | — | MQTT 数据源 ID |
+| mqtt_broker | string | ✅ | — | MQTT Broker 地址，如 `127.0.0.1` 或 `mqtt.example.com` |
+| mqtt_port | int | ❌ | `1883` | Broker 端口，TLS 通常用 `8883` |
+| mqtt_topic | string | ✅ | — | 订阅的 Topic，支持通配符 `+`（单级）和 `#`（多级） |
+| mqtt_client_id | string | ❌ | `dataflux_{task_id}` | 客户端 ID，固定 ID + Clean Session=False 才能保证离线消息补发 |
+| mqtt_qos | int | ❌ | `1` | 服务质量：`0`=最多一次 `1`=至少一次 `2`=恰好一次 |
+| mqtt_clean_session | int | ❌ | `0` | `0`=持久会话（断线重连补发离线消息） `1`=全新会话 |
+| mqtt_use_tls | int | ❌ | `0` | `0`=明文连接 `1`=TLS 加密（端口通常用 8883） |
+| mqtt_keepalive | int | ❌ | `60` | 心跳间隔（秒），Broker 在 1.5 倍此时间内收不到 PINGREQ 会断开 |
+| mqtt_batch_size | int | ❌ | `100` | 攒批大小，满批或超时即写 PG |
+| mqtt_batch_timeout_ms | int | ❌ | `3000` | 攒批超时（毫秒），即使未满 `batch_size` 也会写入 |
+| mqtt_value_format | string | ❌ | `json` | 消息体解析格式：`json` / `text` / `hex` |
+| target_table | string | ❌ | 自动推导 | PG 目标表名，不传则根据 Topic 自动生成 |
+| collect_mode | string | ❌ | `full` | 固定 `”full”` |
+| sync_mode | string | ❌ | `insert` | 推荐 `”insert”`（幂等去重由内容 MD5 主键保证） |
+| status | int | ❌ | `1` | `1`=启用 `0`=停用 |
+
+**Topic 通配符示例：**
+
+| Topic | 匹配 |
+|-------|------|
+| `factory/sensor/temp` | 精确匹配单个主题 |
+| `factory/+/temp` | 匹配 `factory/sensor1/temp`、`factory/sensor2/temp` 等 |
+| `factory/#` | 匹配 `factory` 下所有子级，如 `factory/sensor/temp`、`factory/device/status` |
+
+---
+
+### 3. MQTT 消息体解析
+
+| mqtt_value_format | 消息示例 | 存入 raw_doc |
+|-------------------|---------|-------------|
+| `json`（默认） | `{“temp”: 25.5, “humidity”: 60}` | `{“temp”: 25.5, “humidity”: 60}` |
+| `text` | `sensor_A,25.5,60` | `{“raw_text”: “sensor_A,25.5,60”}` |
+| `hex` | `0x00 0xFF 0xA1` | `{“raw_hex”: “00ffa1”}` |
+| `json`（非法 JSON） | `not valid` | `{“raw_text”: “not valid”}` — 自动降级 |
+
+---
+
+### 4. MQTT 专属接口
+
+MQTT 不通过 `/tsync/run` 触发（那是 ARQ 一次性批处理任务），而是通过常驻订阅管理：
+
+| 接口 | 说明 |
+|------|------|
+| `POST /tsync/mqtt/start` | 启动指定任务的 MQTT Consumer |
+| `POST /tsync/mqtt/stop` | 停止指定任务的 MQTT Consumer |
+| `POST /tsync/mqtt/status` | 查询指定任务的 Consumer 状态 |
+
+**启动 Consumer：**
+
+```json
+POST /tsync/mqtt/start
+{“task_id”: “e480c7cb0ff245a7bbb6685d23615182”}
+```
+
+响应：
+
+```json
+{“code”: 1, “msg”: “订阅已启动”, “data”: null}
+```
+
+> 系统启动时（FastAPI lifespan）会自动拉起所有 `status=1` 的 MQTT 任务，无需手动逐个启动。
+
+**停止 Consumer：**
+
+```json
+POST /tsync/mqtt/stop
+{“task_id”: “e480c7cb0ff245a7bbb6685d23615182”}
+```
+
+响应：
+
+```json
+{“code”: 1, “msg”: “订阅已停止”, “data”: null}
+```
+
+**查询状态：**
+
+```json
+POST /tsync/mqtt/status
+{“task_id”: “e480c7cb0ff245a7bbb6685d23615182”}
+```
+
+响应：
+
+```json
+{“code”: 1, “msg”: “获取成功”, “data”: {“status”: “running”}}
+```
+
+> `status` 取值：`”running”`（运行中）/ `”stopped”`（已停止）
+
+---
+
+### 5. MQTT Consumer 生命周期
+
+| 操作 | DB `status` 变化 | Consumer 行为 | 说明 |
+|------|-----------------|---------------|------|
+| 新建任务 | `status=1` | **不启动** | 仅存入数据库 |
+| 点击「启用」 | `0→1` | **不启动** | 把启动权交给 `/mqtt/start` |
+| 点击「停用」 | `1→0` | **强制停止** | DB 改为 0 + 立即调用 `mqtt_manager.stop()` |
+| 点击「删除」 | 记录删除 | **先停后删** | 先 `mqtt_manager.stop()` 再删 DB |
+| `/mqtt/start` | 不变 | **启动** | 仅当 `status=1` 时生效 |
+| `/mqtt/stop` | 不变 | **停止** | 立即停止，不阻塞 |
+| 系统重启 | 不变 | **自动拉起** | 启动时自动启动所有 `status=1` 的 MQTT 任务 |
+
+---
+
+### 6. MQTT 消费流程图
+
+```
+FastAPI 启动 (lifespan)
+  ↓
+start_all_mqtt_tasks()
+  ├── JOIN sys_data_source WHERE type=”mqtt” AND CollectTask.status=1
+  └── 为每个任务调用 mqtt_manager.start()
+       ↓
+  MqttConsumerManager 为每个 task_id 创建 asyncio.Task
+       ↓
+  MqttSyncEngine.run(stop_event)
+       ↓
+  ┌─ while not stop_event.is_set(): ────────┐
+  │  async with aiomqtt.Client(...) as client│
+  │    await client.subscribe(topic, qos)    │
+  │    async for message in client.messages: │
+  │      batch.append(message)               │
+  │      满批/超时 → to_thread(PG写入)      │
+  │      to_thread(InfluxDB监控)             │
+  │  ── 异常断连 ──                          │
+  │  抢救性 flush batch → 指数退避 → 重连   │
+  └──────────────────────────────────────────┘
+       ↓
+  stop_event.set() → client.disconnect() → 优雅退出
+```
+
+---
+
+### 7. 幂等去重策略
+
+每条消息以 **Topic + Payload 内容的 MD5 哈希** 作为主键：
+
+```
+id = md5(“factory/sensor/temp:{payload_hex}”)
+```
+
+写入时使用 `ON CONFLICT (id) DO NOTHING`，即使 QoS 1/2 重传导致同一条消息被重复消费，也不会产生脏数据。
+
+> **与 Kafka 的区别：** Kafka 用 `topic + partition + offset` 生成 ID（天然唯一），MQTT 没有 offset 概念，用 Payload 内容哈希替代。两个完全相同的 Payload 发到同一个 Topic 会被视为同一条（合理——MQTT 场景下一般不会有意发两条完全相同的消息）。
+
+---
+
+### 8. 目标表结构
+
+```sql
+CREATE TABLE mqtt_sensor_data (
+    id            VARCHAR(32) PRIMARY KEY,  -- topic + payload 的 MD5
+    topic         VARCHAR(255),             -- 消息来源 Topic
+    raw_doc       JSON NOT NULL,            -- 消息内容
+    collected_at  VARCHAR(64)               -- 采集时间 ISO 格式
+);
+```
+
+查询示例：
+
+```sql
+SELECT id,
+       topic,
+       raw_doc->>'temp' AS temperature,
+       raw_doc->>'humidity' AS humidity,
+       collected_at
+FROM mqtt_sensor_data
+ORDER BY collected_at DESC
+LIMIT 50;
+```
+
+---
+
+### 9. MQTT 监控时序数据
+
+`POST /tsync/monitor/trend`
+
+从 InfluxDB 查询 MQTT 任务的消费速率和耗时趋势（与 Kafka 共用同一接口，自动识别 `mqtt_monitor` measurement）。
+
+```json
+{“task_id”: “e480c7cb0ff245a7bbb6685d23615182”, “minutes”: 30}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| task_id | string | ✅ | 任务 UUID（32位） |
+| minutes | int | ❌ | 查询过去多少分钟，默认 `30` |
+
+响应：
+
+```json
+{
+  “code”: 1,
+  “msg”: “获取监控数据成功”,
+  “data”: {
+    “xAxis”: [“16:30:00”, “16:30:03”, “16:30:06”],
+    “series”: {
+      “consumed”: [100, 200, 150],
+      “elapsed_ms”: [3200, 2800, 4500]
+    }
+  }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `xAxis` | 时间点（HH:MM:SS），用于 Echarts X 轴 |
+| `series.consumed` | 每个批次消费的消息条数 |
+| `series.elapsed_ms` | 每个批次写入耗时（毫秒） |
+
+> 数据来源：MQTT 引擎每完成一次攒批写入，向 InfluxDB `mqtt_monitor` measurement 写入 consumed（条数）和 elapsed_ms（耗时）。
+
+---
+
+### 10. MQTT 特有说明
+
+| 特性 | 说明 |
+|------|------|
+| 生命周期 | 常驻后台 `asyncio.Task`，不同于 ARQ Worker 一次性任务 |
+| 自动重连 | 断线后指数退避重连（5s → 10s → 20s → 40s → 60s），连接成功后重置 |
+| 数据安全 | 断连前抢救性 flush 攒批缓冲区中的消息，最小化数据丢失 |
+| 并发控制 | 每个 task_id 唯一一个 Consumer，`/mqtt/start` 检测到已运行则跳过 |
+| 自动拉起 | 系统启动时自动启动所有启用状态的 MQTT 任务 |
+| 监控 | InfluxDB `mqtt_monitor` measurement，记录 consumed + elapsed_ms |
+| 持久会话 | `mqtt_clean_session=0` + 固定 `client_id` = Broker 缓存离线消息，重连后补发 |
+| 优雅停止 | `stop_event.set()` → `client.disconnect()` 3s 超时 → tail flush → 退出 |
+| Windows 兼容 | 顶层设置 `WindowsSelectorEventLoopPolicy`，`aiomqtt` 清理噪音自动消音 |
+
+---
+
+### 11. 注意事项
+
+1. **MQTT 和 Kafka 一样是常驻任务**，任务列表中”执行”按钮对它们无效——应使用专属的 Start/Stop 按钮。
+2. **`/tsync/run` 会拒绝 MQTT 任务**，返回提示”请使用 /tsync/mqtt/start 启动”。
+3. **停用 MQTT 任务会立即停止底层 Consumer**，`run_status` 变为 `stopped`。
+4. **`mqtt_clean_session=0` + 固定 `client_id`** 是保证断线不丢消息的关键组合——不要随便改 `client_id`。
+5. **Topic 通配符 `#` 会匹配所有子级**，如果 Broker 上消息量巨大，注意调整 `batch_size` 和 `batch_timeout_ms` 避免攒批缓冲区 OOM。
+
+
+
+---
+
+## 十七、数据探索 `/explorer`
 
 > 通用数据查询模块，用于探索采集落地库中所有表的表结构、字段信息和数据内容。查询目标库为采集结果库（`dataflux_collected`），而非系统元数据库。
 
