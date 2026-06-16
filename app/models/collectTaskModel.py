@@ -121,5 +121,19 @@ class CollectTask(Base, BaseModelMixin):
     mqtt_batch_timeout_ms: Mapped[int | None] = mapped_column(Integer, nullable=True, default=3000)
     mqtt_value_format: Mapped[str | None] = mapped_column(String(20), nullable=True, default="json")
 
+    # RabbitMQ 采集配置
+    mq_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    mq_port: Mapped[int | None] = mapped_column(Integer, nullable=True, default=5672)
+    mq_vhost: Mapped[str | None] = mapped_column(String(128), nullable=True, default="/")
+    mq_queue: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    mq_exchange: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    mq_exchange_type: Mapped[str | None] = mapped_column(String(20), nullable=True, default="direct")
+    mq_routing_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    mq_durable: Mapped[int | None] = mapped_column(Integer, nullable=True, default=1)
+    mq_prefetch_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=50)
+    mq_batch_size: Mapped[int | None] = mapped_column(Integer, nullable=True, default=100)
+    mq_batch_timeout_ms: Mapped[int | None] = mapped_column(Integer, nullable=True, default=3000)
+    mq_value_format: Mapped[str | None] = mapped_column(String(20), nullable=True, default="json")
+
     def __repr__(self) -> str:
         return f"<CollectTask(task_name={self.task_name}, status={self.status})>"
