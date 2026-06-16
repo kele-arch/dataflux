@@ -15,6 +15,7 @@ from app.models.dataSourceModel import DataSource
 from app.models.taskLogModel import TaskLog
 from app.schemas.tsync import TaskCreateReq, TaskUpdateReq, TaskPageQueryReq
 from app.services.kafka_manager import kafka_manager
+from app.services.mqtt_manager import mqtt_manager
 from app.services.task_control import _get_redis
 
 
@@ -126,8 +127,9 @@ class CRUDCollectTask:
                 task_db_type = source_type_map.get(item.source_id, "unknown")
                 item.db_type = task_db_type  # Pydantic 自动去读这个 db_type
 
-                if task_db_type == "kafka":
-                    item.run_status = kafka_manager.status(item.id)
+                if task_db_type in ("kafka", "mqtt"):
+                    mgr = kafka_manager if task_db_type == "kafka" else mqtt_manager
+                    item.run_status = mgr.status(item.id)
                     item.current_log_id = None
                 else:
                     lock_key = f"sync_task_lock:{item.id}"
