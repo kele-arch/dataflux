@@ -105,7 +105,12 @@ class KafkaConsumerManager:
             await self.stop(task_id)
 
     def status(self, task_id: str) -> str:
-        return "running" if self.is_running(task_id) else "stopped"
+        if not self.is_running(task_id):
+            return "stopped"
+        stop_event = self._stop_events.get(task_id)
+        if stop_event and stop_event.is_set():
+            return "stopped"
+        return "running"
 
 
 # 全局单例

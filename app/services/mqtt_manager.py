@@ -30,8 +30,20 @@ class MqttConsumerManager:
     async def start(self, req: DBSyncReq) -> bool:
         task_id = str(req.task_id)
         if self.is_running(task_id):
-            logger.warning(f"[{task_id}] MQTT Consumer 已在运行, 跳过启动")
-            return False
+            # stop_event 已设置 = 旧 Task 正在清理中 → 等它结束再启动新的
+            old_stop = self._stop_events.get(task_id)
+            if old_stop and old_stop.is_set():
+                old_task = self._tasks.get(task_id)
+                if old_task:
+                    try:
+                        await asyncio.wait_for(old_task, timeout=5)
+                    except (asyncio.TimeoutError, Exception):
+                        old_task.cancel()
+                self._tasks.pop(task_id, None)
+                self._stop_events.pop(task_id, None)
+            else:
+                logger.warning(f"[{task_id}] MQTT Consumer 已在运行, 跳过启动")
+                return False
 
         stop_event = asyncio.Event()
         engine = MqttSyncEngine(req)
@@ -72,7 +84,12 @@ class MqttConsumerManager:
             await self.stop(task_id)
 
     def status(self, task_id: str) -> str:
-        return "running" if self.is_running(task_id) else "stopped"
+        if not self.is_running(task_id):
+            return "stopped"
+        stop_event = self._stop_events.get(task_id)
+        if stop_event and stop_event.is_set():
+            return "stopped"
+        return "running"
 
 
 def _build_mqtt_req(task: CollectTask) -> DBSyncReq:
