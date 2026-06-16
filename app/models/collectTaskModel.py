@@ -108,5 +108,18 @@ class CollectTask(Base, BaseModelMixin):
     kafka_batch_timeout_ms: Mapped[int | None] = mapped_column(Integer, nullable=True, default=5000)
     kafka_value_format: Mapped[str | None] = mapped_column(String(20), nullable=True, default="json")
 
+    # MQTT 采集配置
+    mqtt_broker: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="MQTT Broker地址")
+    mqtt_port: Mapped[int | None] = mapped_column(Integer, nullable=True, default=1883)
+    mqtt_topic: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="订阅Topic")
+    mqtt_client_id: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="客户端ID")
+    mqtt_qos: Mapped[int | None] = mapped_column(Integer, nullable=True, default=1)
+    mqtt_clean_session: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0, comment="0=持久会话")
+    mqtt_use_tls: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    mqtt_keepalive: Mapped[int | None] = mapped_column(Integer, nullable=True, default=60)
+    mqtt_batch_size: Mapped[int | None] = mapped_column(Integer, nullable=True, default=100)
+    mqtt_batch_timeout_ms: Mapped[int | None] = mapped_column(Integer, nullable=True, default=3000)
+    mqtt_value_format: Mapped[str | None] = mapped_column(String(20), nullable=True, default="json")
+
     def __repr__(self) -> str:
         return f"<CollectTask(task_name={self.task_name}, status={self.status})>"
