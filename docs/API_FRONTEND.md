@@ -26,7 +26,7 @@
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | name | string | ✅ | 数据源名称 |
-| type | string | ✅ | 类型：`mysql` / `postgresql` / `oracle` / `sqlserver` / `dm` / `sqlite` / `mongodb` / `ftp` / `api` / `snmp` / `socket` / `kafka` / `mqtt` |
+| type | string | ✅ | 类型：`mysql` / `postgresql` / `oracle` / `sqlserver` / `dm` / `sqlite` / `mongodb` / `ftp` / `api` / `snmp` / `socket` / `kafka` / `mqtt` / `rabbitmq` |
 | host | string | ✅ | 主机地址 |
 | port | int | ✅ | 端口 |
 | db_name | string | ✅ | 数据库名 |
@@ -223,7 +223,7 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| db_type | string | ✅ | `mysql` / `postgresql` / `oracle` / `sqlserver` / `dm` / `sqlite` / `mongodb` / `mqtt` |
+| db_type | string | ✅ | `mysql` / `postgresql` / `oracle` / `sqlserver` / `dm` / `sqlite` / `mongodb` / `mqtt` / `rabbitmq` |
 | host | string | ✅ | 主机地址 |
 | port | int | ✅ | 端口 |
 | username | string | ✅ | 用户名 |
@@ -4178,7 +4178,340 @@ LIMIT 50;
 
 ---
 
-## 十七、数据探索 `/explorer`
+## 十七、RabbitMQ 流式采集专项
+
+> RabbitMQ 基于 AMQP 0-9-1 协议，采用**常驻消费**模式（类似 Kafka/MQTT），不走 ARQ 批处理 Worker。基于 `aio_pika`（asyncio 原生），支持交换机绑定、队列声明、QoS 预取、手动 ACK/NACK，**写库成功后才 ACK，失败则整批 NACK 重新入队——保证零丢失**。
+
+### 三大流式引擎对比
+
+| 特性 | RabbitMQ | Kafka | MQTT |
+|------|----------|-------|------|
+| 运行模式 | 常驻 `asyncio.Task` | 同 | 同 |
+| 触发方式 | `/rabbitmq/start` | `/kafka/start` | `/mqtt/start` |
+| 停止方式 | `/rabbitmq/stop` | `/kafka/stop` | `/mqtt/stop` |
+| 状态查询 | `/rabbitmq/status` | `/kafka/status` | `/mqtt/status` |
+| 自动拉起 | ✅ 启动时自动拉起所有启用任务 | ✅ | ✅ |
+| 消息可靠性 | **写库成功 → ACK / 写库失败 → NACK 重新入队** | offset commit | QoS 重传 |
+| 幂等策略 | routing_key + body MD5 | topic+partition+offset MD5 | topic+payload MD5 |
+| 监控写入 | InfluxDB `rabbitmq_monitor` | `kafka_monitor` | `mqtt_monitor` |
+| 并发控制 | `prefetch_count` 预取 | `max_records` 攒批 | `batch_size` 攒批 |
+
+---
+
+### 1. 创建 RabbitMQ 数据源
+
+```json
+{
+  "name": "业务队列RabbitMQ",
+  "type": "rabbitmq",
+  "host": "0.0.0.0",
+  "port": 5672,
+  "db_name": "default",
+  "username": "",
+  "password": ""
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | ✅ | 数据源别名 |
+| type | string | ✅ | 固定 `"rabbitmq"` |
+| host | string | ✅ | 随便填（如 `"0.0.0.0"`），不参与连接 |
+| port | int | ✅ | 随便填（如 `0`），不参与连接 |
+| db_name | string | ✅ | 随便填 |
+| username | string | ❌ | 随便填，RabbitMQ 认证在任务中配置 |
+| password | string | ❌ | 随便填 |
+
+---
+
+### 2. 创建 RabbitMQ 消费任务
+
+**基础模式（直连队列）：**
+
+```json
+{
+  "task_name": "业务日志队列消费",
+  "source_id": "你的RabbitMQ数据源ID",
+  "mq_host": "127.0.0.1",
+  "mq_port": 5672,
+  "mq_vhost": "/",
+  "mq_queue": "business_logs",
+  "mq_prefetch_count": 50,
+  "mq_durable": 1,
+  "mq_batch_size": 100,
+  "mq_batch_timeout_ms": 3000,
+  "mq_value_format": "json",
+  "target_table": "mq_business_logs",
+  "collect_mode": "full",
+  "sync_mode": "insert",
+  "status": 1
+}
+```
+
+**交换机绑定模式：**
+
+```json
+{
+  "task_name": "订单事件消费",
+  "source_id": "你的RabbitMQ数据源ID",
+  "mq_host": "127.0.0.1",
+  "mq_port": 5672,
+  "mq_vhost": "/",
+  "mq_queue": "order_events",
+  "mq_exchange": "order_topic",
+  "mq_exchange_type": "topic",
+  "mq_routing_key": "order.#",
+  "mq_prefetch_count": 30,
+  "mq_batch_size": 200,
+  "mq_batch_timeout_ms": 5000,
+  "mq_value_format": "json",
+  "target_table": "mq_order_events",
+  "status": 1
+}
+```
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| task_name | string | ✅ | — | 任务名称 |
+| source_id | string | ✅ | — | RabbitMQ 数据源 ID |
+| mq_host | string | ✅ | — | RabbitMQ Broker 地址 |
+| mq_port | int | ❌ | `5672` | Broker 端口 |
+| mq_vhost | string | ❌ | `"/"` | 虚拟主机（vhost），多租户隔离 |
+| mq_queue | string | ✅ | — | 队列名称 |
+| mq_exchange | string | ❌ | — | 交换机名称，不传则直连队列消费 |
+| mq_exchange_type | string | ❌ | `"direct"` | 交换机类型：`direct` / `topic` / `fanout` / `headers` |
+| mq_routing_key | string | ❌ | — | 路由键，topic 模式支持通配符 `*`（单词）和 `#`（多词） |
+| mq_durable | int | ❌ | `1` | `1`=持久化队列（Broker 重启不丢定义） `0`=非持久 |
+| mq_prefetch_count | int | ❌ | `50` | 预取消息数量，控制消费者内存占用 |
+| mq_batch_size | int | ❌ | `100` | 攒批大小，满批或超时即写 PG + 批量 ACK |
+| mq_batch_timeout_ms | int | ❌ | `3000` | 攒批超时（毫秒） |
+| mq_value_format | string | ❌ | `json` | 消息体解析格式：`json` / `text` / `hex` |
+| target_table | string | ❌ | `mq_{队列名}` | PG 目标表名 |
+| collect_mode | string | ❌ | `full` | 固定 `"full"` |
+| sync_mode | string | ❌ | `insert` | 推荐 `"insert"`（幂等去重由 MD5 主键保证） |
+| status | int | ❌ | `1` | `1`=启用 `0`=停用 |
+
+---
+
+### 3. 消息体解析
+
+| mq_value_format | 消息示例 | 存入 raw_doc |
+|-----------------|---------|-------------|
+| `json`（默认） | `{"order_id":123,"amount":99.9}` | `{"order_id": 123, "amount": 99.9}` |
+| `text` | `order_123,completed,99.9` | `{"raw_text": "order_123,completed,99.9"}` |
+| `hex` | `0x00 0xFF 0xA1` | `{"raw_hex": "00ffa1"}` |
+| `json`（非法 JSON） | `not valid` | `{"raw_text": "not valid"}` — 自动降级 |
+
+---
+
+### 4. RabbitMQ 专属接口
+
+| 接口 | 说明 |
+|------|------|
+| `POST /tsync/rabbitmq/start` | 启动指定任务的 RabbitMQ Consumer |
+| `POST /tsync/rabbitmq/stop` | 停止指定任务的 RabbitMQ Consumer |
+| `POST /tsync/rabbitmq/status` | 查询指定任务的 Consumer 状态 |
+
+**启动 Consumer：**
+
+```json
+POST /tsync/rabbitmq/start
+{"task_id": "e480c7cb0ff245a7bbb6685d23615182"}
+```
+
+响应：
+
+```json
+{"code": 1, "msg": "消费已启动", "data": null}
+```
+
+> 系统启动时（FastAPI lifespan）会自动拉起所有 `status=1` 的 RabbitMQ 任务。
+
+**停止 Consumer：**
+
+```json
+POST /tsync/rabbitmq/stop
+{"task_id": "e480c7cb0ff245a7bbb6685d23615182"}
+```
+
+响应：
+
+```json
+{"code": 1, "msg": "消费已停止", "data": null}
+```
+
+**查询状态：**
+
+```json
+POST /tsync/rabbitmq/status
+{"task_id": "e480c7cb0ff245a7bbb6685d23615182"}
+```
+
+响应：
+
+```json
+{"code": 1, "msg": "获取成功", "data": {"status": "running"}}
+```
+
+---
+
+### 5. 消息可靠性保证（核心机制）
+
+RabbitMQ 引擎的设计目标是**金融级零丢失 + 毒药消息自动隔离**：
+
+```
+while 消费中:
+  1. async for message in queue:          ← 从队列拉取消息
+  2. batch.append(message)                ← 进入内存攒批缓冲区
+  3. pending_messages.append(message)      ← 保存原始引用（用于 ACK/NACK）
+
+  4. 满批 或 超时 → 写 PG:
+     ├─ 写库成功 → 批量 ACK 
+     ├─ DB 宕机 (OperationalError) → 整批 NACK + 等 5s 重试 ⏳
+     └─ 其他异常 →  降级「单条排雷」:
+           ├─ 单条成功 → ACK 
+           └─ 单条失败（毒药消息）
+               → 写 PG mq_dead_letter 表（隔离备查）
+               → ACK（从队列移除，阻断死循环）🗑️
+```
+
+**三层异常处理逻辑：**
+
+| 异常类型 | 判定 | 行为 |
+|----------|------|------|
+| `OperationalError` | 数据库宕机/连接断开 | 整批 NACK 重新入队，等 5 秒后重试。网络恢复后继续消费 |
+| 批次写入失败（非 DB） | 某条消息数据格式有问题 | **不整批退回**——逐条单写排雷，精确定位毒药 |
+| 单条写入失败 | 该条消息与 PG 表结构不兼容 | **写 PG 死信表 → ACK 移出队列**，阻断 NACK 死循环 |
+
+**死信隔离机制（`mq_dead_letter` 表）：**
+
+| 场景 | 行为 |
+|------|------|
+| 正常消费 | 攒批写入 PG → 成功 → 批量 ACK |
+| DB 宕机 | 整批 NACK + 5s 延迟重试，DB 恢复后自动继续 |
+| 毒药消息（类型不兼容/字段超长） | 单条降级失败 → 原始消息 + 错误原因写入 `mq_dead_letter` → ACK 移除 |
+| 极端情况（死信表写不进） | `msg.nack(requeue=True)` 退回队列保底（极少发生） |
+| 进程崩溃 | 消息仍在 Broker 队列中（未 ACK），重启后重新投递 |
+| Broker 重启 | `durable=1` 队列定义持久化，重启后队列和消息仍存在 |
+
+> **前端可基于 `mq_dead_letter` 表开发「死信管理」页面**——查看失败的原始消息、错误原因，修改数据后一键重发到目标队列。
+
+---
+
+### 6. 交换机和队列拓扑
+
+```
+[Producer] → Exchange (topic/direct/fanout) → routing_key → Queue → [Consumer]
+                                                              ↑
+                                                     mq_prefetch_count
+                                                     控制每次预取量
+```
+
+**配置场景：**
+
+| 场景 | mq_exchange | mq_exchange_type | mq_routing_key |
+|------|-------------|-----------------|----------------|
+| 直连队列（最简单） | 不传 | — | 不传 |
+| 精确路由 | `"order_ex"` | `"direct"` | `"order.created"` |
+| 模式匹配 | `"order_ex"` | `"topic"` | `"order.*"` |
+| 广播 | `"logs_ex"` | `"fanout"` | 不传（广播忽略 routing_key） |
+
+---
+
+### 7. 幂等去重策略
+
+每条消息以 **routing_key + body 内容的 MD5 哈希** 作为主键：
+
+```
+id = md5("order.created:{body_hex}")
+```
+
+写入时 `ON CONFLICT (id) DO NOTHING`。重新投递（NACK 后重入队）的同一条消息会产生相同的 ID，不会插入重复行。
+
+---
+
+### 8. 目标表结构
+
+```sql
+CREATE TABLE mq_business_logs (
+    id            VARCHAR(32) PRIMARY KEY,  -- routing_key + body 的 MD5
+    routing_key   VARCHAR(255),             -- 消息的路由键
+    raw_doc       JSON NOT NULL,            -- 消息内容
+    collected_at  VARCHAR(64)               -- 采集时间 ISO 格式
+);
+```
+
+**死信表（毒药消息隔离）：**
+
+```sql
+CREATE TABLE mq_dead_letter (
+    id            VARCHAR(64) PRIMARY KEY,  -- UUID 主键
+    task_id       VARCHAR(64),              -- 关联的任务 ID
+    queue_name    VARCHAR(255),             -- 来源队列名
+    routing_key   VARCHAR(255),             -- 消息路由键
+    raw_payload   TEXT NOT NULL,            -- 原始消息体（String 最高容错）
+    error_reason  TEXT,                     -- PG 写入失败的错误原因
+    created_at    VARCHAR(64)               -- 隔离时间 ISO 格式
+);
+```
+
+查询死信示例：
+
+```sql
+SELECT id, queue_name, routing_key,
+       raw_payload,
+       error_reason,
+       created_at
+FROM mq_dead_letter
+WHERE task_id = 'your-task-id'
+ORDER BY created_at DESC
+LIMIT 50;
+```
+
+> 死信表是**全系统共享**的——所有 RabbitMQ 任务的毒药消息都写入同一张表，通过 `task_id` 和 `queue_name` 区分来源。
+
+---
+
+### 9. 监控时序数据
+
+与 Kafka/MQTT 共用 `/tsync/monitor/trend` 接口，后端根据任务类型自动选择 `rabbitmq_monitor` measurement。
+
+```json
+POST /tsync/monitor/trend
+{"task_id": "e480c7cb0ff245a7bbb6685d23615182", "minutes": 30}
+```
+
+响应格式与 Kafka/MQTT 一致，`consumed` + `elapsed_ms` 时序数组。
+
+---
+
+### 10. RabbitMQ Consumer 生命周期
+
+| 操作 | DB `status` | Consumer 行为 |
+|------|------------|---------------|
+| 新建任务 | `1` | **不启动** |
+| 点击「启用」 | `0→1` | **不启动**（把启动权交给 `/rabbitmq/start`） |
+| 点击「停用」 | `1→0` | **强制停止** Consumer |
+| 点击「删除」 | 记录删除 | **先停 Consumer 后删记录** |
+| `/rabbitmq/start` | 不变 | **启动**（仅当 `status=1`） |
+| `/rabbitmq/stop` | 不变 | **停止**（非阻塞） |
+| 系统重启 | 不变 | **自动拉起**所有 `status=1` 的任务 |
+
+---
+
+### 11. 注意事项
+
+1. **RabbitMQ 是常驻任务**，任务列表中「执行」按钮对它无效——应使用专属的 Start/Stop 按钮。`/tsync/run` 会拦截并提示使用 `/rabbitmq/start`。
+2. **毒药消息自动隔离至 `mq_dead_letter` 表**——数据格式与 PG 表不兼容的消息不会被反复 NACK 形成死循环，而是自动写入死信表并从队列移除。可通过数据探索接口或自定义页面查看隔离的消息，修复数据后重新发送到队列。
+3. **`mq_durable=1` 仅持久化队列定义（元数据）**——消息持久化需要在 Producer 端设置 `delivery_mode=2`。
+4. **`prefetch_count` 不是批次大小**——它控制 RabbitMQ 推送给消费者的未确认消息数上限。`batch_size` 是应用层攒批写入 PG 的大小。二者配合使用。
+5. **认证凭据**：当前版本 RabbitMQ 认证使用默认的 `guest`/`guest`，如需自定义认证，可通过 `config_json` 或后续新增 `mq_username`/`mq_password` 字段配置。
+
+
+
+---
+
+## 十八、数据探索 `/explorer`
 
 > 通用数据查询模块，用于探索采集落地库中所有表的表结构、字段信息和数据内容。查询目标库为采集结果库（`dataflux_collected`），而非系统元数据库。
 
