@@ -2553,6 +2553,116 @@ YAML 多文档拆解测试
 
 
 
+### 13. FTP 目录树勘探（配置辅助）
+
+> 在创建 FTP 采集任务前，可通过此接口预览服务器上的目录和文件结构，帮助用户选择正确的 `ftp_path` 或 `ftp_url`。支持懒加载（逐级展开）和有限深度的全量递归，所有网络 I/O 均在后台线程池执行，不阻塞主服务。
+
+`POST /datasource/ftp/dir_tree`
+
+**懒加载模式（推荐）：** 每次只返回当前路径下的直接子节点，前端树形组件逐级展开。
+
+```json
+{
+  "datasource_id": "550e8400e29b41d4a716446655440000",
+  "remote_path": "/",
+  "recursive": false
+}
+```
+
+**全量递归模式：** 一次性返回指定深度内的完整目录树（谨慎使用，深层目录可能数据量较大）。
+
+```json
+{
+  "datasource_id": "550e8400e29b41d4a716446655440000",
+  "remote_path": "/data",
+  "recursive": true,
+  "max_depth": 3
+}
+```
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| datasource_id | string | ✅ | — | FTP/SFTP 数据源 UUID（32位） |
+| remote_path | string | ❌ | `"/"` | 勘探的远程起始路径 |
+| recursive | bool | ❌ | `false` | `false`=懒加载（仅当前层级） `true`=递归向下探测 |
+| max_depth | int | ❌ | `2` | 递归最大深度（1~5），仅在 `recursive=true` 时生效 |
+
+**响应：**
+
+```json
+{
+  "code": 1,
+  "msg": "获取成功",
+  "data": [
+    {
+      "title": "data",
+      "key": "/data",
+      "is_dir": true,
+      "isLeaf": false,
+      "children": []
+    },
+    {
+      "title": "report.csv",
+      "key": "/report.csv",
+      "is_dir": false,
+      "isLeaf": true,
+      "children": null
+    }
+  ]
+}
+```
+
+| 响应字段 | 类型 | 说明 |
+|----------|------|------|
+| title | string | 文件/目录名（用于前端树节点展示） |
+| key | string | 绝对路径（前端展开时回传给 `remote_path`） |
+| is_dir | bool | 是否为目录 |
+| isLeaf | bool | 是否叶子节点（`true`=文件 `false`=目录，对齐 ElementPlus/AntDesign 树组件） |
+| children | array/null | 子节点列表：目录为空数组可展开，文件为 null 不可展开 |
+
+**协议自动识别：**
+
+接口根据数据源的 `config_json.protocol` 字段选择连接方式：
+
+| config_json.protocol | 连接方式 | 端口 |
+|---------------------|----------|------|
+| `"ftp"`（默认） | FTP 明文 | 21 |
+| `"ftps"` | FTP + TLS 加密 | 21 |
+| `"sftp"` | SFTP（SSH 文件传输） | 22 |
+
+> 未配置 `config_json.protocol` 时默认走 FTP，且引擎会自动检测服务器是否要求 TLS（503 AUTH → 自动切换到 FTPS）。
+
+**前端懒加载交互示例：**
+
+```javascript
+// 1. 初始加载根目录
+const root = await fetch("/api/v1/datasource/ftp/dir_tree", {
+  method: "POST",
+  body: JSON.stringify({ datasource_id: "xxx", remote_path: "/" })
+});
+// → 返回 [/data, /backup, config.yaml]
+
+// 2. 用户点击展开 /data 文件夹
+const children = await fetch("/api/v1/datasource/ftp/dir_tree", {
+  method: "POST",
+  body: JSON.stringify({ datasource_id: "xxx", remote_path: "/data" })
+});
+// → 返回 [/data/reports, /data/raw, /data/schema.sql]
+
+// 3. 继续展开 /data/reports
+// ...
+```
+
+**典型使用场景：**
+
+```
+1. 前端创建 FTP 任务表单中加一个「浏览远程目录」按钮
+2. 点击后弹出树形对话框，调用此接口懒加载展示远程文件结构
+3. 用户选中一个文件或目录，自动填入表单的 ftp_path / ftp_url 字段
+```
+
+
+
 ---
 
 ## 十一、API 接口采集专项
