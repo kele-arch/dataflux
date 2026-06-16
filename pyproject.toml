@@ -44,4 +44,5 @@ dependencies = [
     "aiokafka>=0.14.0",
     "oracledb>=4.0.1",
     "aiomqtt>=2.4.0,<3.0",
+    "aio-pika>=9.6.2",
 ]
