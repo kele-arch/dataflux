@@ -6,6 +6,7 @@
 # Copyright (c) 2026 by 胡H, All Rights Reserved.
 # @desc: Kafka 流式采集服务: 常驻Consumer, offset由Kafka自身持久化
 
+import asyncio
 import hashlib
 import json
 import time
@@ -184,8 +185,10 @@ class KafkaSyncEngine:
                             "value": self._decode_value(msg.value)
                         })
 
-                # 写入 PG
-                inserted = self._ingest_batch(target_table, batch)
+                # 写入 PG (线程池执行, 不阻塞 event loop)
+                inserted = await asyncio.to_thread(
+                    self._ingest_batch, target_table, batch
+                )
 
                 # 写库成功后才 commit offset
                 await consumer.commit()
@@ -196,7 +199,9 @@ class KafkaSyncEngine:
                     f"写入 {inserted} 条, 耗时 {elapsed_ms}ms"
                 )
 
-                self._write_monitor(task_id, len(batch), elapsed_ms)
+                await asyncio.to_thread(
+                    self._write_monitor, task_id, len(batch), elapsed_ms
+                )
 
         except Exception as e:
             logger.error(f"[{task_id}] Kafka 消费异常: {e}")
