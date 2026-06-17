@@ -440,6 +440,17 @@ class DashboardOut(BaseModel):
 
 # endregion
 
+# region ---- 文件同步记录查询 ----
+class RecordQueryReq(BaseModel):
+    task_id: str = Field(..., min_length=32, max_length=32, description="关联的采集任务 ID")
+    file_type: Optional[str] = Field(default=None, description="按文件类型过滤: csv/json/yaml/xlsx/xml/binary")
+    page: int = Field(default=1, ge=1, description="页码")
+    page_size: int = Field(default=10, ge=1, description="每页条数")
+
+
+# endregion
+
+
 # region ----- kafka的influx数据获取 ----
 class MonitorTrendReq(BaseModel):
     task_id: str = Field(..., min_length=32, max_length=32, description="任务ID")

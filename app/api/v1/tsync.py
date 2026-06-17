@@ -16,9 +16,9 @@ from app.core.influx_client import get_influx_client
 from app.crud.crud_tsync import crud_task
 from app.models.collectTaskModel import CollectTask
 from app.models.dataSourceModel import DataSource
-from app.models.taskLogModel import TaskLog
+from app.models.taskLogModel import TaskLog, FtpFileRecord, OssFileRecord
 from app.schemas.tsync import DBSyncReq, TaskIdReq, TaskUpdateReq, TaskCreateReq, TaskPageQueryReq, TaskPageOut, \
-    TaskOut, DashboardOut, TaskStatusReq, MonitorTrendReq
+    TaskOut, DashboardOut, TaskStatusReq, MonitorTrendReq, RecordQueryReq
 from app.schemas.response import BaseResponse
 from app.services.kafka_manager import kafka_manager, _build_kafka_req
 from app.services.mqtt_manager import mqtt_manager, _build_mqtt_req
@@ -490,5 +490,73 @@ async def rabbitmq_stop(req: TaskIdReq):
 @router.post("/rabbitmq/status", summary="查询RabbitMQ消费状态", response_model=BaseResponse)
 async def rabbitmq_status(req: TaskIdReq):
     return BaseResponse(data={"status": rabbitmq_manager.status(req.task_id)}, msg="获取成功")
+
+# endregion
+
+
+# region ---- 文件同步记录查询 ----
+@router.post("/record/list", summary="获取同步文件明细记录(OSS / FTP)")
+def get_sync_records(req: RecordQueryReq, db: Session = Depends(get_db)):
+    """
+    根据任务类型自动查询 oss_file_record 或 ftp_file_record 表,
+    返回分页的文件级同步明细(文件名/大小/MD5/解析行数等)
+    """
+    task = crud_task.get_by_id(db, req.task_id)
+    if not task:
+        return BaseResponse(code=0, msg="任务不存在", data=None)
+
+    # 查 DataSource 判断是 OSS 还是 FTP
+    source = db.execute(
+        select(DataSource).where(DataSource.id == task.source_id)
+    ).scalar_one_or_none()
+    source_type = source.type.lower() if source else ""
+
+    if source_type == "oss":
+        model = OssFileRecord
+        path_field = OssFileRecord.object_key
+    elif source_type == "ftp":
+        model = FtpFileRecord
+        path_field = FtpFileRecord.remote_path
+    else:
+        return BaseResponse(
+            code=0,
+            msg=f"该任务类型 [{source_type}] 不支持文件记录查询, 仅 OSS / FTP 可用",
+            data=None,
+        )
+
+    query = db.query(model).filter(model.task_id == req.task_id)
+
+    if req.file_type:
+        query = query.filter(model.file_type == req.file_type)
+
+    total = query.count()
+    offset = (req.page - 1) * req.page_size
+    records = (
+        query.order_by(model.create_time.desc())
+        .offset(offset)
+        .limit(req.page_size)
+        .all()
+    )
+
+    items = []
+    for r in records:
+        items.append({
+            "id": r.id,
+            "file_name": r.file_name,
+            "file_path": getattr(r, path_field.name, None),
+            "file_size": r.file_size,
+            "md5": r.md5,
+            "file_type": r.file_type,
+            "is_parsed": r.is_parsed,
+            "parsed_rows": r.parsed_rows,
+            "create_time": r.create_time.strftime("%Y-%m-%d %H:%M:%S") if r.create_time else None,
+        })
+
+    return BaseResponse(data={
+        "total": total,
+        "page": req.page,
+        "page_size": req.page_size,
+        "items": items,
+    }, msg="获取成功")
 
 # endregion
