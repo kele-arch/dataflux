@@ -112,14 +112,16 @@ class FtpSyncEngine:
     def _build_local_path(self, remote_path: str) -> str:
         """
         根据远程路径生成本地存储路径
-        规则: {save_dir}/{task_id}/{文件名}
+        规则: {save_dir}/{task_id}/{hash8}_{文件名}
+        用路径短哈希作前缀, 防止不同子目录下的同名文件互相覆盖
         """
         save_dir = getattr(self.req, "local_save_dir", None) or self.DEFAULT_SAVE_DIR
         task_dir = os.path.join(save_dir, str(self.req.task_id))
         Path(task_dir).mkdir(parents=True, exist_ok=True)
 
         file_name = os.path.basename(remote_path)
-        return os.path.join(task_dir, file_name)
+        key_hash = hashlib.md5(remote_path.encode("utf-8")).hexdigest()[:8]
+        return os.path.join(task_dir, f"{key_hash}_{file_name}")
 
     def _generate_row_id(self, row_dict: dict) -> str:
         """ 基于行内容的 MD5 哈希生成幂等主键, 重复执行不产生脏数据 """
