@@ -220,7 +220,7 @@ async def run_sync_task(req: TaskIdReq, db: Session = Depends(get_db)):
 @router.post("/pause", summary="暂停正在执行的任务", response_model=BaseResponse)
 def pause_task(req: TaskIdReq):
     set_task_status(req.task_id, TASK_PAUSED)
-    return BaseResponse(msg="暂停指令已下发, 任务将在当前批次完成后优雅暂停")
+    return BaseResponse(msg="暂停指令已下发, 任务将在当前批次完成后暂停")
 
 
 @router.post("/cancel", summary="取消正在执行的任务", response_model=BaseResponse)
