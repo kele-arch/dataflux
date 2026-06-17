@@ -7,7 +7,7 @@
 # @desc:
 from typing import Optional
 
-from sqlalchemy import String, Integer, Text, DateTime, JSON, Float
+from sqlalchemy import String, Integer, BigInteger, Text, DateTime, JSON, Float
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime
 from app.db.base import Base
@@ -96,4 +96,23 @@ class FtpFileRecord(BaseModelMixin, Base):
     parsed_rows: Mapped[int] = mapped_column(Integer, default=0, comment="解析写入行数")
     downloaded_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="下载时间")
 
+
+# endregion
+
+# region ---- OSS采集记录表 ----
+class OssFileRecord(BaseModelMixin, Base):
+    __tablename__ = "oss_file_record"
+    __table_args__ = {"comment": "OSS 对象存储文件采集记录表"}
+
+    task_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True, comment="关联采集任务ID")
+    object_key: Mapped[str] = mapped_column(String(500), nullable=False, comment="OSS对象Key(即文件完整路径)")
+    local_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True, comment="本地存储绝对路径")
+    file_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="文件名")
+    file_size: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, comment="文件大小(字节)")
+    md5: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, comment="文件MD5，用于增量去重")
+    file_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True,
+                                                     comment="文件类型: csv/json/yaml/xlsx/xml/binary")
+    is_parsed: Mapped[int] = mapped_column(Integer, default=0, comment="是否已解析入库(0未解析 1已解析)")
+    parsed_rows: Mapped[int] = mapped_column(Integer, default=0, comment="解析写入行数")
+    downloaded_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="首次下载时间")
 # endregion
