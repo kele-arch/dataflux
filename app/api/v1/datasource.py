@@ -11,13 +11,17 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine, inspect
 from typing import List, Dict, Any
+import boto3
+from botocore.config import Config as BotoConfig
+from botocore import UNSIGNED
 
 from app.db.session import get_db
+from app.models.dataSourceModel import DataSource
 from app.schemas.response import BaseResponse
 from app.schemas.datasource import (
     DataSourceCreateReq, DataSourceUpdateReq, DataSourceIdReq,
     DataSourcePageQueryReq, DataSourceOut, DataSourceBase, DataSourcePageOut,
-    FtpExploreReq
+    FtpExploreReq, OssTreeReq
 )
 from app.crud.crud_datasource import crud_datasource
 from app.services.ftp_explorer import FtpExplorer
@@ -42,8 +46,27 @@ def test_db_connection(req: DataSourceBase):
         if req.type.lower() == "api":
             return BaseResponse(code=0, msg="接口采集不需要测试连接，请在任务中配置 api_url 后直接执行")
 
-        if req.type.lower() in ("snmp", "socket", "kafka", "mqtt", "rabbitmq", "rabbitmq"):
-            return BaseResponse(code=0, msg="SNMP/Socket/Kafka/MQTT/RabbitMQ 采集不需要测试连接，请在任务中配置相关参数后直接执行")
+        if req.type.lower() in ("snmp", "socket", "kafka", "mqtt", "rabbitmq"):
+            return BaseResponse(code=0,
+                                msg="SNMP/Socket/Kafka/MQTT/RabbitMQ 采集不需要测试连接，请在任务中配置相关参数后直接执行")
+
+        if req.type.lower() == "oss":
+            try:
+                import boto3
+                from botocore.config import Config as BotoConfig
+                config = req.config_json or {}
+                client = boto3.client(
+                    "s3",
+                    endpoint_url=config.get("endpoint") or f"https://{req.host}",
+                    aws_access_key_id=req.username or "",
+                    aws_secret_access_key=req.password or "",
+                    region_name=config.get("region") or "us-east-1",
+                    config=BotoConfig(s3={"addressing_style": "virtual"}, signature_version="s3v4"),
+                )
+                client.list_buckets()
+                return BaseResponse(msg="连接成功！OSS/S3 通信正常")
+            except Exception as e:
+                return BaseResponse(code=0, msg=f"连接失败: {str(e)}")
 
         if req.type.lower() == "ftp":
             from ftplib import FTP, FTP_TLS, error_perm
@@ -132,8 +155,8 @@ def get_datasource_tables(req: DataSourceIdReq, db: Session = Depends(get_db)):
         if source.type.lower() == "api":
             return BaseResponse(code=0, msg="接口采集不支持表查询")
 
-        if source.type.lower() in ("snmp", "socket", "kafka", "mqtt", "rabbitmq"):
-            return BaseResponse(code=0, msg="SNMP/Socket/Kafka/MQTT 采集不支持表查询")
+        if source.type.lower() in ("snmp", "socket", "kafka", "mqtt", "rabbitmq", "oss"):
+            return BaseResponse(code=0, msg="SNMP/Socket/Kafka/MQTT/RabbitMQ/OSS 采集不支持表查询")
 
         if source.type.lower() == "ftp":
             return BaseResponse(code=0, msg="FTP 数据源不支持表查询，请在任务中配置 ftp_path")
@@ -168,8 +191,8 @@ def get_datasource_tables_detail(req: DataSourceIdReq, db: Session = Depends(get
         if source.type.lower() == "api":
             return BaseResponse(code=0, msg="接口采集不支持表结构查询")
 
-        if source.type.lower() in ("snmp", "socket", "kafka", "mqtt", "rabbitmq"):
-            return BaseResponse(code=0, msg="SNMP/Socket/Kafka/MQTT 采集不支持表结构查询")
+        if source.type.lower() in ("snmp", "socket", "kafka", "mqtt", "rabbitmq", "oss"):
+            return BaseResponse(code=0, msg="SNMP/Socket/Kafka/MQTT/RabbitMQ/OSS 采集不支持表结构查询")
 
         if source.type.lower() == "ftp":
             return BaseResponse(code=0, msg="FTP 数据源不支持表结构查询")
@@ -262,4 +285,78 @@ async def get_ftp_dir_tree(req: FtpExploreReq, db: Session = Depends(get_db)):
             "msg": f"文件目录树获取失败: {str(e)}",
             "data": [],
         }
+
+
+# endregion
+
+
+# region ---- OSS/MinIO 目录树勘探 ----
+@router.post("/oss/tree", summary="获取OSS/MinIO指定层级的目录树")
+def get_oss_tree(req: OssTreeReq, db: Session = Depends(get_db)):
+    source = db.query(DataSource).filter(DataSource.id == req.source_id).first()
+    if not source or source.type != "oss":
+        return BaseResponse(code=0, msg="数据源不存在或不是OSS类型")
+
+    try:
+        # 动态鉴权配置（免密兜底）
+        if not source.username or not source.password:
+            boto_config = BotoConfig(signature_version=UNSIGNED, retries={"max_attempts": 2})
+            ak, sk = None, None
+        else:
+            boto_config = BotoConfig(signature_version="s3v4", retries={"max_attempts": 2})
+            ak, sk = source.username, source.password
+
+        # 寻址风格推断
+        addressing_style = "path" if "127.0.0.1" in source.host or ":9000" in source.host else "virtual"
+        boto_config.s3 = {"addressing_style": addressing_style}
+
+        client = boto3.client(
+            "s3",
+            endpoint_url=source.host,
+            aws_access_key_id=ak,
+            aws_secret_access_key=sk,
+            config=boto_config
+        )
+
+        # 调用 S3 接口,传入 Body 里的 prefix
+        resp = client.list_objects_v2(
+            Bucket=source.db_name,
+            Prefix=req.prefix,
+            Delimiter='/'  # 核心：按目录折叠
+        )
+
+        nodes = []
+
+        # 解析子目录
+        for cp in resp.get("CommonPrefixes", []):
+            folder_path = cp["Prefix"]
+            folder_name = folder_path[len(req.prefix):].strip('/')
+            nodes.append({
+                "type": "folder",
+                "name": folder_name,
+                "full_path": folder_path,
+                "is_leaf": False
+            })
+
+        # 解析当前目录下的文件
+        for obj in resp.get("Contents", []):
+            file_path = obj["Key"]
+            if file_path == req.prefix:
+                continue
+
+            file_name = file_path[len(req.prefix):]
+            nodes.append({
+                "type": "file",
+                "name": file_name,
+                "full_path": file_path,
+                "size": obj.get("Size", 0),
+                "last_modified": obj.get("LastModified").isoformat() if obj.get("LastModified") else None,
+                "is_leaf": True
+            })
+
+        return BaseResponse(msg="获取成功", data=nodes)
+
+    except Exception as e:
+        return BaseResponse(code=0, msg=f"获取目录树失败: {str(e)}")
+
 # endregion
