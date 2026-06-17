@@ -45,4 +45,5 @@ dependencies = [
     "oracledb>=4.0.1",
     "aiomqtt>=2.4.0,<3.0",
     "aio-pika>=9.6.2",
+    "boto3>=1.43.31",
 ]
