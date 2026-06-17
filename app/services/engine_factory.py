@@ -9,6 +9,7 @@
 from app.schemas.tsync import DBSyncReq
 from app.services.api_sync_engine import ApiSyncEngine
 from app.services.ftp_sync_engine import FtpSyncEngine
+from app.services.oss_sync_engine import OssSyncEngine
 from app.services.snmp_sync_engine import SnmpSyncEngine
 from app.services.socket_sync_engine import SocketSyncEngine
 from app.services.sync_service import DatabaseSyncEngine
@@ -21,8 +22,10 @@ class EngineFactory:
         db_type = req.db_type.lower()
         if db_type == "mongodb":
             return MongoSyncEngine(req)
-        elif db_type == "ftp":
+        elif db_type in ("ftp", "ftps", "sftp", "sdtp"):
             return FtpSyncEngine(req)
+        elif db_type == "oss":
+            return OssSyncEngine(req)
         elif db_type == "api":
             return ApiSyncEngine(req)
         elif db_type == "snmp":

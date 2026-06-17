@@ -13,7 +13,9 @@ from app.schemas.base import BaseDecryptReq
 class DataSourceBase(BaseDecryptReq):
     name: str = Field(..., description="数据源名称，如：产线A_MySQL")
     # type: str = Field(..., description="数据源类型：mysql, postgresql")
-    type: Literal["mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket", "kafka", "sqlite", "mqtt", "rabbitmq"] = Field(..., description="数据库类型")
+    type: Literal[
+        "mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket", "kafka", "sqlite", "mqtt", "rabbitmq", "oss"] = Field(
+        ..., description="数据库类型")
     host: str = Field(..., description="主机地址")
     port: int = Field(..., description="端口")
     db_name: str = Field(..., description="数据库名")
@@ -70,5 +72,15 @@ class FtpExploreReq(BaseModel):
     remote_path: Optional[str] = Field("/", description="勘探的远程起始路径，默认根目录 /")
     recursive: Optional[bool] = Field(False, description="是否递归获取全量树（懒加载模式传 False）")
     max_depth: Optional[int] = Field(2, ge=1, le=5, description="递归最大深度 (1-5)，防止深层目录卡死")
-# endregion
+
     model_config = ConfigDict(from_attributes=True)
+
+
+# endregion
+
+# region ---- OSS 目录勘探 ----
+class OssTreeReq(BaseModel):
+    source_id: str = Field(..., description="关联的数据源ID")
+    prefix: str = Field(default="", description="当前所在目录的前缀，查根目录传空字符串。例如：'cjcy_files/'")
+
+# endregion
