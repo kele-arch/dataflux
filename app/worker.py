@@ -126,7 +126,19 @@ async def run_sync_job(ctx, task_id: str):
             socket_timeout=task.socket_timeout,
             socket_recv_size=task.socket_recv_size,
             socket_terminator=task.socket_terminator,
-            socket_response_format=task.socket_response_format
+            socket_response_format=task.socket_response_format,
+
+            # oss — 凭证优先从任务取，任务没填则从数据源兜底
+            oss_endpoint=task.oss_endpoint or f"https://{source.host}",
+            oss_access_key=task.oss_access_key or source.username,
+            oss_secret_key=task.oss_secret_key or source.password,
+            oss_bucket=task.oss_bucket or source.db_name,
+            oss_region=task.oss_region,
+            oss_object_key=task.oss_object_key,
+            oss_prefix=task.oss_prefix,
+            oss_max_keys=task.oss_max_keys,
+            oss_use_ssl=task.oss_use_ssl,
+            oss_addressing_style=task.oss_addressing_style,
         )
 
         # 查找 /run 接口提前写入的 pending 日志并更新为 running
