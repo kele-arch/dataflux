@@ -26,7 +26,7 @@
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | name | string | ✅ | 数据源名称 |
-| type | string | ✅ | 类型：`mysql` / `postgresql` / `oracle` / `sqlserver` / `dm` / `sqlite` / `mongodb` / `ftp` / `api` / `snmp` / `socket` / `kafka` / `mqtt` / `rabbitmq` |
+| type | string | ✅ | 类型：`mysql` / `postgresql` / `oracle` / `sqlserver` / `dm` / `sqlite` / `mongodb` / `ftp` / `api` / `snmp` / `socket` / `kafka` / `mqtt` / `rabbitmq` / `oss` |
 | host | string | ✅ | 主机地址 |
 | port | int | ✅ | 端口 |
 | db_name | string | ✅ | 数据库名 |
@@ -223,7 +223,7 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| db_type | string | ✅ | `mysql` / `postgresql` / `oracle` / `sqlserver` / `dm` / `sqlite` / `mongodb` / `mqtt` / `rabbitmq` |
+| db_type | string | ✅ | `mysql` / `postgresql` / `oracle` / `sqlserver` / `dm` / `sqlite` / `mongodb` / `mqtt` / `rabbitmq` / `oss` |
 | host | string | ✅ | 主机地址 |
 | port | int | ✅ | 端口 |
 | username | string | ✅ | 用户名 |
@@ -613,7 +613,7 @@ const timer = setInterval(async () => {
 响应：
 
 ```json
-{"code": 1, "msg": "暂停指令已下发, 任务将在当前批次完成后优雅暂停", "data": null}
+{"code": 1, "msg": "暂停指令已下发, 任务将在当前批次完成后暂停", "data": null}
 ```
 
 > 引擎在当前批次落盘后检测到暂停信号 → 将水位线保存到 Redis → 抛出 `TaskPausedException` → Worker 将 TaskLog 状态更新为 `paused`。恢复时调用 `/resume`，水位线从 Redis 回写到数据库。
@@ -832,6 +832,81 @@ const timer = setInterval(async () => {
 | active_tasks | 启用中的任务数 |
 | today_records | 今日同步总条数 |
 | success_rate | 今日成功率（百分比） |
+
+---
+
+### 14. 文件同步记录查询
+
+`POST /tsync/record/list`
+
+查询 OSS / FTP 任务的**文件级**同步明细——每个文件是否下载成功、MD5 是否变化（跳过）、解析了多少行。后端根据任务类型自动路由到 `oss_file_record` 或 `ftp_file_record` 表。
+
+```json
+{
+  "task_id": "550e8400e29b41d4a716446655440000",
+  "file_type": "csv",
+  "page": 1,
+  "page_size": 10
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| task_id | string | ✅ | 任务 UUID（32位）。仅支持 `oss` / `ftp` 类型 |
+| file_type | string | ❌ | 按文件类型过滤：`csv` / `json` / `yaml` / `xlsx` / `xml` / `binary` |
+| page | int | ❌ | 页码，默认 `1` |
+| page_size | int | ❌ | 每页条数，默认 `10` |
+
+响应：
+
+```json
+{
+  "code": 1,
+  "msg": "获取成功",
+  "data": {
+    "total": 156,
+    "page": 1,
+    "page_size": 10,
+    "items": [
+      {
+        "id": "a1b2c3d4...",
+        "file_name": "report_202606.csv",
+        "file_path": "reports/2026/06/report_202606.csv",
+        "file_size": 1048576,
+        "md5": "d41d8cd98f00b204e9800998ecf8427e",
+        "file_type": "csv",
+        "is_parsed": 1,
+        "parsed_rows": 5000,
+        "create_time": "2026-06-17 10:30:00"
+      }
+    ]
+  }
+}
+```
+
+| 响应字段 | 类型 | 说明 |
+|----------|------|------|
+| file_name | string | 文件名（提取自路径末段） |
+| file_path | string | 远程路径：OSS=object_key，FTP=remote_path |
+| file_size | int | 文件大小（字节） |
+| md5 | string | 文件 MD5 哈希，用于增量去重判断 |
+| file_type | string | 文件类型标识 |
+| is_parsed | int | `0`=仅下载未解析 `1`=已解析入库 |
+| parsed_rows | int | 解析写入的行数 |
+| create_time | string | 下载时间 |
+
+**典型使用场景：**
+
+```
+1. OSS 批量采集任务执行完毕 → 前端轮询 /tasklog/detail 拿到最终状态
+2. 自动或用户手动打开「文件明细」面板 → 调 /record/list 分页展示每条文件记录
+3. 前端表格可直接渲染：
+   - file_name 列，可点击跳转
+   - file_size 列，格式化为 KB/MB
+   - is_parsed=1 → 绿色徽章"已解析"；=0 → 灰色"仅下载"
+   - parsed_rows 列展示解析行数
+   - md5 列可 hover 查看完整哈希
+```
 
 ---
 
@@ -2155,7 +2230,99 @@ FTP/SFTP 数据源不需要数据库连接，连接信息可在任务中通过 `
 
 ---
 
-### 3. CSV 文件采集
+### 3. FTP 批量目录采集
+
+> 一次性采集远程目录下所有匹配的文件。支持**递归子目录**和**通配符过滤**，采用"全量扫描 → 快速去重 → 单个处理 → 异常隔离"四步策略。单个文件失败不中断批次。
+
+**方式 C：`ftp_dir`（批量目录）**
+
+```json
+{
+  "task_name": "FTP批量采集",
+  "source_id": "你的FTP数据源ID",
+  "ftp_dir": "/factory/logs",
+  "file_pattern": "*.csv",
+  "is_recursive": 1,
+  "ftp_passive": 1,
+  "file_parse": 1,
+  "file_type": "auto",
+  "target_table": "ftp_logs",
+  "collect_mode": "full",
+  "status": 1
+}
+```
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| ftp_dir | string | ✅ | — | 远程根目录，如 `/factory/logs/` |
+| file_pattern | string | ❌ | `"*"` | 文件通配符（Python fnmatch 语法）：`*.csv`、`log_*.xml`、`data_????.json` |
+| is_recursive | int | ❌ | `0` | `0`=仅当前目录 `1`=递归所有子目录 |
+
+**三种模式的优先级：**
+
+| 优先级 | 模式 | 关键字段 | 适用场景 |
+|--------|------|----------|----------|
+| 1 | 批量目录 | `ftp_dir` | 自动采集目录下所有匹配文件 |
+| 2 | 单文件 URL | `ftp_url` | 跨协议单文件（SFTP/FTPS 可自动识别） |
+| 3 | 单文件路径 | `ftp_path` | 同协议单文件（连接信息从数据源读） |
+
+**两阶段去重：**
+
+```
+扫描阶段 → 远程 mtime + size 与历史记录比对
+  ├─ 相同 → 跳过（不下载, 不消耗带宽）
+  └─ 不同 → 下载到本地 → 计算 MD5 → 再与历史 MD5 比对
+             ├─ 相同 → 跳过
+             └─ 不同 → 解析入库 + 更新记录
+```
+
+| 去重方式 | 开销 | 精度 |
+|----------|------|------|
+| **快速去重**（mtime+size） | 零开销，仅 FTP `MDTM` / SFTP `stat` 命令 | 99% 准确 |
+| **精确去重**（MD5） | 下载文件后流式计算 | 100% 准确 |
+
+**批量处理流程：**
+
+```
+1. _connect_client() → FTP/FTPS/SFTP 连接
+2. _scan_directory() → DFS 递归扫描目录树
+   ├─ MLSD 获取 (name, type, mtime, size) — 优先
+   └─ Dir() 回退 — 服务器不支持 MLSD 时
+3. fnmatch 通配符过滤
+4. for each file → _process_single_file():
+   ├─ 快速去重 (mtime+size) → 命中跳过
+   ├─ 下载 + MD5 去重 → 命中跳过
+   ├─ 解析入库
+   └─ 更新 ftp_file_record
+   单文件异常 → logger.error → continue（不中断批次）
+5. 返回统计结果
+```
+
+**批量任务请求示例（完整）：**
+
+```json
+POST /tsync/add
+{
+  "task_name": "FTP全目录批量采集",
+  "source_id": "你的FTP数据源ID",
+  "target_table": "ftp_batch_data",
+  "collect_mode": "full",
+  "sync_mode": "insert",
+  "status": 1,
+  "ftp_dir": "/ta",
+  "file_pattern": "*",
+  "is_recursive": 1,
+  "ftp_passive": 1,
+  "file_parse": 1,
+  "file_type": "auto"
+}
+```
+
+> **注意：** 和单文件模式一样，**host/port/username/password 不需要传**——Worker 自动从数据源注入凭证。
+
+---
+
+### 4. CSV 文件采集
 
 CSV 文件自动探测编码（UTF-8 / GBK），流式分批写入，不会 OOM。
 
@@ -2197,7 +2364,7 @@ FROM ftp_devices;
 
 ---
 
-### 4. JSON 文件采集
+### 5. JSON 文件采集
 
 支持顶层数组 `[...]` 和单个对象 `{...}`。
 
@@ -2235,7 +2402,7 @@ FROM ftp_devices;
 
 ---
 
-### 5. YAML 文件采集
+### 6. YAML 文件采集
 
 支持单文档和多文档 YAML（`---` 分隔）。
 
@@ -2270,7 +2437,7 @@ metadata:
 
 ---
 
-### 6. Excel 文件采集
+### 7. Excel 文件采集
 
 支持 `.xlsx` / `.xls` 格式，自动读取所有工作表，首行作为列名。
 
@@ -2294,7 +2461,7 @@ metadata:
 
 ---
 
-### 7. XML 文件采集
+### 8. XML 文件采集
 
 递归解析 XML 树，整个文档存为一条 JSON 记录。
 
@@ -2338,7 +2505,7 @@ metadata:
 
 ---
 
-### 8. 仅下载不解析（二进制文件）
+### 9. 仅下载不解析（二进制文件）
 
 `file_parse=0`（默认）时，文件只下载到本地，不解析入库。适合二进制文件（图片、PDF 等）。
 
@@ -2355,7 +2522,7 @@ metadata:
 
 ---
 
-### 9. 多协议连接详解
+### 10. 多协议连接详解
 
 #### FTPS 加密（自动检测）
 
@@ -2403,7 +2570,7 @@ metadata:
 
 ---
 
-### 10. MD5 去重与幂等写入
+### 11. MD5 去重与幂等写入
 
 **文件级去重：** 同一文件重复执行时，如果 MD5 未变化，自动跳过下载和解析。
 
@@ -2423,7 +2590,7 @@ metadata:
 
 ---
 
-### 11. 文件记录表 `ftp_file_record`
+### 12. 文件记录表 `ftp_file_record`
 
 每次下载都会记录元数据：
 
@@ -2437,13 +2604,17 @@ metadata:
 | file_size | INTEGER | 文件大小（字节） |
 | md5 | VARCHAR(32) | 文件 MD5，用于增量去重 |
 | file_type | VARCHAR(20) | 文件类型 |
+| remote_mtime | VARCHAR(30) | 远程文件修改时间（批量模式快速去重凭据） |
+| remote_size | BIGINT | 远程文件大小（配合 mtime 做下载前去重） |
 | is_parsed | INTEGER | 0=未解析，1=已解析入库 |
 | parsed_rows | INTEGER | 解析写入行数 |
 | downloaded_at | TIMESTAMP | 下载时间 |
 
+> **查询文件明细：** 任务执行后通过 `POST /tsync/record/list`（传入 `task_id`）分页查询该表，详见[同步任务管理 - 第 14 节](#14-文件同步记录查询)。
+
 ---
 
-### 12. 深度测试(已通过)
+### 13. 深度测试(已通过)
 
 CSV 流式解析
 
@@ -2553,7 +2724,7 @@ YAML 多文档拆解测试
 
 
 
-### 13. FTP 目录树勘探（配置辅助）
+### 14. FTP 目录树勘探（配置辅助）
 
 > 在创建 FTP 采集任务前，可通过此接口预览服务器上的目录和文件结构，帮助用户选择正确的 `ftp_path` 或 `ftp_url`。支持懒加载（逐级展开）和有限深度的全量递归，所有网络 I/O 均在后台线程池执行，不阻塞主服务。
 
@@ -3695,7 +3866,7 @@ start_all_kafka_tasks()
   │  写 InfluxDB (消费速率/Lag)       │
   └───────────────────────────────────┘
        ↓
-  stop_event.set() → consumer.stop() → 优雅退出
+  stop_event.set() → consumer.stop() → 退出
 ```
 
 ---
@@ -3753,7 +3924,7 @@ LIMIT 50;
 | 生命周期 | 常驻后台 `asyncio.Task`，不同于 ARQ Worker 一次性任务 |
 | offset 管理 | `enable_auto_commit=False`，手动 commit，确保写库成功的消息不会被重复消费 |
 | 并发控制 | 每个 task_id 唯一一个 Consumer，`/kafka/start` 检测到已运行则跳过 |
-| 优雅停止 | `stop_event.set()` → `consumer.stop()`，最多等待 30 秒超时强制取消 |
+| 停止 | `stop_event.set()` → `consumer.stop()`，最多等待 30 秒超时强制取消 |
 | 自动拉起 | 系统启动时自动启动所有启用的 Kafka 任务 |
 | 监控 | InfluxDB `kafka_monitor` measurement，包含 consumed/Lag/elapsed_ms |
 | 暂停/取消 | 调用 `/kafka/stop` 停止消费，调用 `/kafka/start` 重新启动 |
@@ -4064,7 +4235,7 @@ start_all_mqtt_tasks()
   │  抢救性 flush batch → 指数退避 → 重连   │
   └──────────────────────────────────────────┘
        ↓
-  stop_event.set() → client.disconnect() → 优雅退出
+  stop_event.set() → client.disconnect() → 退出
 ```
 
 ---
@@ -4161,7 +4332,7 @@ LIMIT 50;
 | 自动拉起 | 系统启动时自动启动所有启用状态的 MQTT 任务 |
 | 监控 | InfluxDB `mqtt_monitor` measurement，记录 consumed + elapsed_ms |
 | 持久会话 | `mqtt_clean_session=0` + 固定 `client_id` = Broker 缓存离线消息，重连后补发 |
-| 优雅停止 | `stop_event.set()` → `client.disconnect()` 3s 超时 → tail flush → 退出 |
+| 停止 | `stop_event.set()` → `client.disconnect()` 3s 超时 → tail flush → 退出 |
 | Windows 兼容 | 顶层设置 `WindowsSelectorEventLoopPolicy`，`aiomqtt` 清理噪音自动消音 |
 
 ---
@@ -4511,7 +4682,352 @@ POST /tsync/monitor/trend
 
 ---
 
-## 十八、数据探索 `/explorer`
+## 十八、OSS（S3 兼容）对象存储采集专项
+
+> 基于 `boto3` S3 协议，支持阿里云 OSS / AWS S3 / MinIO 等所有 S3 兼容存储。**批处理模式**（走 ARQ Worker），支持单文件下载和批量前缀采集，MD5 增量去重，结构化文件解析入库。AK/SK 凭证存储在数据源中，任务侧无需重复填写。
+
+### vs FTP 对比
+
+| 特性 | OSS / S3 | FTP / SFTP |
+|------|----------|------------|
+| 运行模式 | ARQ Worker 一次性批处理 | 同 |
+| 协议 | S3（boto3） | FTP / FTPS / SFTP |
+| 凭证管理 | 数据源 `username`/`password` 存 AK/SK | 数据源 + ftp_url |
+| 单文件 | `oss_object_key` 指定完整对象 Key | `ftp_path` 指定远程路径 |
+| 批量模式 | `oss_prefix` 前缀列举 + 自动翻页 | 不支持（需逐个指定文件） |
+| MD5 去重 | ✅ 通过 oss_file_record 表 | ✅ 通过 ftp_file_record 表 |
+| 文件解析 | CSV / JSON / YAML / Excel / XML | 同 |
+| 端点风格 | `virtual`（Bucket 在域名） / `path`（Bucket 在路径） | — |
+
+---
+
+### 1. 创建 OSS 数据源
+
+> **关键设计：** 敏感凭证（AccessKey / SecretKey）存储在数据源中，任务创建时无需重复填写。`username` 存 AK，`password` 存 SK，`host` 存 Endpoint 域名，`db_name` 存默认 Bucket。
+
+```json
+{
+  "name": "阿里云OSS生产",
+  "type": "oss",
+  "host": "oss-cn-hangzhou.aliyuncs.com",
+  "port": 443,
+  "db_name": "my-bucket",
+  "username": "LTAI5txxxxxxxxxxxxx",
+  "password": "xxxxxxxxxxxxxxxxxxxx",
+  "config_json": {"region": "cn-hangzhou", "addressing_style": "virtual"}
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | ✅ | 数据源别名 |
+| type | string | ✅ | 固定 `"oss"` |
+| host | string | ✅ | Endpoint 域名（如 `oss-cn-hangzhou.aliyuncs.com`），不含 `https://` |
+| port | int | ✅ | 端口，HTTPS 用 `443`，HTTP 用 `80` |
+| db_name | string | ✅ | 默认 Bucket 名称，任务可覆盖 |
+| username | string | ✅ | **AccessKeyId** |
+| password | string | ✅ | **AccessKeySecret** |
+| config_json | object | ❌ | 扩展配置，见下方 |
+
+**config_json 可选项：**
+
+| 键 | 默认值 | 说明 |
+|----|--------|------|
+| region | `"us-east-1"` | 区域标识（阿里云必须填正确区域） |
+| addressing_style | `"virtual"` | Bucket 寻址风格：`virtual`（Bucket 在域名中） / `path`（Bucket 在路径中） |
+
+---
+
+### 2. 凭证自动注入机制
+
+**Worker 组装执行参数时的兜底链：**
+
+```
+oss_access_key  = 任务显式传的值 || 数据源 username
+oss_secret_key  = 任务显式传的值 || 数据源 password
+oss_endpoint    = 任务显式传的值 || https://{数据源 host}
+oss_bucket      = 任务显式传的值 || 数据源 db_name
+```
+
+> **前端只需让用户选数据源**，AK/SK 输入框可以删掉。只有在极少数需要针对某个任务使用不同凭证时，才在任务中显式覆盖。
+
+**匿名免密模式：** 当数据源的 `username`（AK）和 `password`（SK）都为空时，引擎自动切入 **UNSIGNED 匿名模式**——不进行签名验证，直接访问公开 Bucket 或 MinIO 免密实例。无需额外配置。
+
+---
+
+### 3. 单文件模式
+
+下载指定对象 Key，支持 MD5 去重和结构化解析。重复执行时文件未变化则自动跳过。
+
+```json
+{
+  "task_name": "采集月度报表",
+  "source_id": "你的OSS数据源ID",
+  "oss_object_key": "reports/2026/06/summary.json",
+  "oss_bucket": "my-bucket",
+  "file_parse": 1,
+  "file_type": "json",
+  "target_table": "oss_monthly_summary",
+  "collect_mode": "full",
+  "status": 1
+}
+```
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| task_name | string | ✅ | — | 任务名称 |
+| source_id | string | ✅ | — | OSS 数据源 ID |
+| oss_object_key | string | ✅ | — | 对象的完整 Key（路径），如 `data/report.csv` |
+| oss_bucket | string | ❌ | 数据源的 db_name | Bucket 名称 |
+| oss_endpoint | string | ❌ | 数据源拼接 | Endpoint 完整 URL |
+| oss_region | string | ❌ | `"us-east-1"` | 区域 |
+| oss_addressing_style | string | ❌ | `"virtual"` | `virtual` / `path` |
+| oss_use_ssl | int | ❌ | `1` | `0`=HTTP `1`=HTTPS |
+| file_parse | int | ❌ | `0` | `1`=解析文件内容入库 `0`=只下载不解析 |
+| file_type | string | ❌ | `"auto"` | `auto` / `csv` / `json` / `yaml` / `xlsx` / `xml` |
+| target_table | string | ❌ | `oss_{bucket名}` | PG 目标表名 |
+| sync_mode | string | ❌ | `insert` | 推荐 `"insert"`（幂等由内容 MD5 主键保证） |
+| schedule_type | string | ❌ | `"none"` | 可配置定时调度（如 `daily / 02:00` 每天凌晨采集） |
+
+---
+
+### 4. 批量前缀模式
+
+列举指定前缀下的**所有**对象，逐个下载处理。自动处理分页（超过 1000 个对象时翻页）。单个对象失败不中断批次，继续处理下一个。
+
+```json
+{
+  "task_name": "采集6月所有日志",
+  "source_id": "你的OSS数据源ID",
+  "oss_prefix": "logs/2026/06/",
+  "oss_bucket": "my-bucket",
+  "oss_max_keys": 500,
+  "file_parse": 1,
+  "file_type": "csv",
+  "target_table": "oss_june_logs",
+  "schedule_type": "daily",
+  "schedule_value": "03:00",
+  "collect_mode": "full",
+  "status": 1
+}
+```
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| oss_prefix | string | ✅ | — | 对象 Key 前缀，如 `logs/2026/`，匹配该前缀下所有对象 |
+| oss_max_keys | int | ❌ | `1000` | 单次 API 调用列举的最大对象数（翻页自动处理，这只是分页大小） |
+
+> **注意：** `oss_object_key`（单文件）和 `oss_prefix`（批量）二选一。都传则 `oss_object_key` 优先。
+
+---
+
+### 5. 消息体 / 文件解析
+
+复用与 FTP 相同的解析引擎，支持 5 种结构化格式：
+
+| file_type | 行为 | 目标表结构 |
+|-----------|------|-----------|
+| `csv` | 首行作为列名，自动探测 UTF-8/GBK 编码 | `id` UUID + `source_key` + `raw_doc` JSON |
+| `json` | 顶层数组 → 逐条入行；单对象 → 存为一行 | 同上 |
+| `yaml` | 支持多文档（`---` 分隔），每个文档存一行 | 同上 |
+| `xlsx` | 读取所有工作表，首行为列名 | 同上 |
+| `xml` | 递归解析为嵌套 dict，存为一行 | 同上 |
+| `binary` / 不解析 | 仅下载到本地，不入库 | — |
+
+**目标表结构：**
+
+```sql
+CREATE TABLE oss_monthly_summary (
+    id          VARCHAR(32) PRIMARY KEY,   -- 内容 MD5 主键（幂等去重）
+    source_key  VARCHAR(500),              -- OSS 对象 Key（溯源）
+    raw_doc     JSON NOT NULL              -- 文件解析后的结构化数据
+);
+```
+
+---
+
+### 6. OSS 文件记录表 `oss_file_record`
+
+每次采集都会记录元数据，用于增量去重（MD5 未变化则跳过）：
+
+| 字段 | 说明 |
+|------|------|
+| task_id | 关联任务 ID |
+| object_key | OSS 对象 Key（完整路径） |
+| local_path | 本地下载存储路径 |
+| file_name | 文件名 |
+| file_size | 文件大小（字节） |
+| md5 | 文件 MD5 哈希，增量去重判断依据 |
+| file_type | 文件类型 |
+| is_parsed | `0`=未解析 `1`=已解析入库 |
+| parsed_rows | 解析写入的行数 |
+| downloaded_at | 首次下载时间 |
+
+---
+
+### 7. 采集流程图
+
+```
+1. 解析任务参数：单文件模式 vs 批量前缀模式
+2. 连接 S3 客户端（boto3，支持 virtual / path 寻址）
+3. 确定待处理对象列表：
+   ├─ 单文件: [oss_object_key]
+   └─ 批量: list_objects_v2(Prefix) → 自动翻页 → 过滤目录占位对象
+         ↓
+4. 逐个处理对象 (每对象前后探测暂停/取消信号):
+   ├─ 查 oss_file_record 历史 MD5
+   ├─ download_file 下载到本地
+   ├─ 计算 MD5 → 与历史对比 → 相同则跳过
+   ├─ 保存记录到 oss_file_record
+   └─ file_parse=1 且非 binary → 解析入库:
+        CSV → 流式解析
+        JSON → 数组/单对象
+        YAML → 多文档
+        Excel → 多工作表
+        XML → 递归转 dict
+        每行以内容 MD5 为主键 → ON CONFLICT DO NOTHING 幂等写入
+5. 单个对象失败不中断批次，记录日志后继续处理下一个
+6. 返回统计结果
+```
+
+---
+
+### 8. 幂等去重策略
+
+**文件级去重：** 同一对象 Key 重复执行时，如果 MD5 未变化，自动跳过下载和解析。
+
+**行级幂等：** 每行数据以内容 MD5 哈希作为主键，`ON CONFLICT (id) DO NOTHING`。即使同一文件重复解析多次，也不会产生重复行。
+
+```
+// 文件未变化
+{
+  "status": "skipped",
+  "object_key": "reports/2026/06/summary.json",
+  "records": 0
+}
+```
+
+---
+
+### 9. OSS 目录树勘探（配置辅助）
+
+> 类似 FTP 的目录树勘探，用于在创建 OSS 采集任务前预览 Bucket 内的目录结构和文件列表。采用 S3 `Delimiter='/'` 机制按目录折叠，支持懒加载（逐级展开）。自动适配匿名免密和 signed 认证，自动推断 virtual/path 寻址风格。
+
+`POST /datasource/oss/tree`
+
+**请求：**
+
+```json
+{
+  "source_id": "550e8400e29b41d4a716446655440000",
+  "prefix": "cjcy_files/"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| source_id | string | ✅ | OSS 数据源 UUID（32位） |
+| prefix | string | ❌ | 当前目录前缀。查 Bucket 根目录传空字符串 `""`；查子目录传如 `"data/2026/"` |
+
+**响应：**
+
+```json
+{
+  "code": 1,
+  "msg": "获取成功",
+  "data": [
+    {
+      "type": "folder",
+      "name": "reports",
+      "full_path": "cjcy_files/reports/",
+      "is_leaf": false
+    },
+    {
+      "type": "file",
+      "name": "summary.json",
+      "full_path": "cjcy_files/summary.json",
+      "size": 204800,
+      "last_modified": "2026-06-17T10:30:00",
+      "is_leaf": true
+    }
+  ]
+}
+```
+
+| 响应字段 | 类型 | 说明 |
+|----------|------|------|
+| type | string | `"folder"`（目录）或 `"file"`（文件） |
+| name | string | 文件/目录名（用于前端树节点展示） |
+| full_path | string | 完整 Key（前端展开时回传给 `prefix`） |
+| size | int | 文件大小（字节），仅文件有 |
+| last_modified | string | 最后修改时间 ISO 格式，仅文件有 |
+| is_leaf | bool | 是否叶子节点：`true`=文件 `false`=目录（对齐 ElementPlus/AntDesign 树组件） |
+
+**前端懒加载交互示例：**
+
+```javascript
+// 1. 初始加载 Bucket 根目录
+const root = await fetch("/api/v1/datasource/oss/tree", {
+  method: "POST",
+  body: JSON.stringify({ source_id: "xxx", prefix: "" })
+});
+// → 返回根目录下的文件夹和文件列表
+
+// 2. 用户点击展开 cjcy_files/ 文件夹
+const children = await fetch("/api/v1/datasource/oss/tree", {
+  method: "POST",
+  body: JSON.stringify({ source_id: "xxx", prefix: "cjcy_files/" })
+});
+// → 返回 cjcy_files/ 下的子目录和文件
+
+// 3. 继续展开更深层级...
+```
+
+**认证自动适配：**
+
+| 数据源配置 | 引擎行为 |
+|-----------|----------|
+| `username`/`password` 有值 | s3v4 签名认证 |
+| `username`/`password` 都为空 | UNSIGNED 匿名免密模式 |
+
+**寻址风格自动推断：**
+
+| host 特征 | addressing_style |
+|-----------|-----------------|
+| 包含 `127.0.0.1` 或 `:9000` | `path`（适合 MinIO） |
+| 其他（如 `oss-cn-hangzhou.aliyuncs.com`） | `virtual`（适合阿里云/AWS） |
+
+---
+
+### 10. 区别
+
+| 引擎 | 适用场景 | 运行模式 | 凭证管理 |
+|------|----------|----------|----------|
+| **OSS** | S3 兼容对象存储（阿里云/AWS/MinIO） | ARQ Worker 批处理 | 数据源 username/password |
+| FTP | 传统 FTP/SFTP 文件服务器 | ARQ Worker 批处理 | 数据源 + ftp_url |
+| API | HTTP 接口 JSON 数据 | ARQ Worker 批处理 | 数据源或任务请求头 |
+| Kafka | 流式消息队列 | 常驻 Consumer | 任务 bootstrap_servers |
+| MQTT | 物联网消息 | 常驻 Consumer | 任务 broker |
+| RabbitMQ | AMQP 消息队列 | 常驻 Consumer | 任务 mq_host |
+
+---
+
+### 10. 注意事项
+
+1. **OSS 是批处理任务**，通过 `/tsync/run` 触发执行或配置定时调度。
+2. **凭证自动从数据源注入**——创建 OSS 任务时不需要填 AK/SK。如果需要针对特定任务使用不同凭证，才在任务中显式填写覆盖。
+3. **单个对象失败不中断批次**——如果批量模式中某个文件下载/解析失败，引擎记录错误日志后继续处理下一个对象，不会整个任务报错退出。
+4. **批量模式注意对象数量**——`oss_max_keys` 只是单次 API 调用的分页大小，引擎会自动翻页拉取全部匹配对象。如果前缀下有几百万个对象，建议切分成更细的前缀分批执行。
+5. **MinIO 兼容配置**——使用 MinIO 时，`oss_endpoint` 填 `http://192.168.1.100:9000`，`oss_addressing_style` 设为 `"path"`，`oss_use_ssl` 设为 `0`。
+6. **阿里云 OSS 注意 Region**——`config_json.region` 必须和 Bucket 所在地域一致（如 `cn-hangzhou`），否则签名校验失败。
+7. **匿名免密访问**——公开 Bucket 或 MinIO 免密实例：数据源 `username`/`password` 留空即可，引擎自动走 UNSIGNED 模式。
+8. **文件同步明细**——任务执行后可通过 `/tsync/record/list` 查询每个文件的下载状态、MD5、解析行数，前端可直接渲染为文件明细表格。
+
+
+
+---
+
+## 十九、数据探索 `/explorer`
 
 > 通用数据查询模块，用于探索采集落地库中所有表的表结构、字段信息和数据内容。查询目标库为采集结果库（`dataflux_collected`），而非系统元数据库。
 
