@@ -30,7 +30,7 @@ class DBSyncReq(BaseDecryptReq):
     task_id: Optional[str] = Field(default=None, description="任务唯一标识(内部流转专用)")
 
     db_type: Literal[
-        "mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket", "kafka", "sqlite", "mqtt", "rabbitmq"] = Field(
+        "mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket", "kafka", "sqlite", "mqtt", "rabbitmq", "oss"] = Field(
         ...,
         description="数据库类型")
     host: str = Field(..., description="主机地址 IP")
@@ -181,6 +181,24 @@ class DBSyncReq(BaseDecryptReq):
     mq_batch_timeout_ms: Optional[int] = Field(default=3000, description="攒批超时毫秒数")
     mq_value_format: Optional[Literal["json", "text", "hex"]] = Field(default="json", description="消息体解析格式")
 
+    # ---- OSS (S3兼容) 专用 ----
+    oss_endpoint: Optional[str] = Field(default=None,
+                                        description="Endpoint地址，如 https://oss-cn-hangzhou.aliyuncs.com")
+    oss_access_key: Optional[str] = Field(default=None, description="AccessKeyId")
+    oss_secret_key: Optional[str] = Field(default=None, description="AccessKeySecret")
+    oss_bucket: Optional[str] = Field(default=None, description="Bucket名称")
+    oss_region: Optional[str] = Field(default=None, description="区域，部分S3兼容存储需要，可留空")
+
+    # 采集模式: 单文件 或 批量前缀
+    oss_object_key: Optional[str] = Field(default=None, description="单文件模式：完整对象Key，如 data/2026/calico.yaml")
+    oss_prefix: Optional[str] = Field(default=None, description="批量模式：前缀，如 logs/2026-06/，采集该前缀下所有对象")
+    oss_max_keys: Optional[int] = Field(default=1000, description="批量模式单次列举的最大对象数")
+
+    oss_use_ssl: Optional[bool] = Field(default=True, description="是否使用HTTPS")
+    oss_addressing_style: Optional[Literal["virtual", "path"]] = Field(
+        default="virtual", description="virtual=虚拟主机风格(默认) path=路径风格(部分MinIO需要)"
+    )
+
 
 # region ---- 任务管理 ----
 class TaskCreateReq(BaseDecryptReq):
@@ -279,6 +297,18 @@ class TaskCreateReq(BaseDecryptReq):
     mq_batch_size: Optional[int] = Field(default=100, description="攒批大小")
     mq_batch_timeout_ms: Optional[int] = Field(default=3000, description="攒批超时毫秒")
     mq_value_format: Optional[str] = Field(default="json", description="消息体解析格式: json/text/hex")
+
+    # OSS (S3兼容) 采集配置
+    oss_endpoint: Optional[str] = Field(default=None, description="Endpoint地址")
+    oss_access_key: Optional[str] = Field(default=None, description="AccessKeyId")
+    oss_secret_key: Optional[str] = Field(default=None, description="AccessKeySecret")
+    oss_bucket: Optional[str] = Field(default=None, description="Bucket名称")
+    oss_region: Optional[str] = Field(default=None, description="区域(可留空)")
+    oss_object_key: Optional[str] = Field(default=None, description="单文件模式: 完整对象Key")
+    oss_prefix: Optional[str] = Field(default=None, description="批量模式: 前缀")
+    oss_max_keys: Optional[int] = Field(default=1000, description="批量列举最大对象数")
+    oss_use_ssl: Optional[int] = Field(default=1, description="是否HTTPS: 0/1")
+    oss_addressing_style: Optional[str] = Field(default="virtual", description="virtual/path")
 
 
 class TaskUpdateReq(TaskCreateReq):
@@ -382,6 +412,12 @@ class TaskOut(BaseModel):
     mq_batch_size: Optional[int] = 100
     mq_batch_timeout_ms: Optional[int] = 3000
     mq_value_format: Optional[str] = "json"
+    oss_endpoint: Optional[str] = None
+    oss_bucket: Optional[str] = None
+    oss_region: Optional[str] = None
+    oss_object_key: Optional[str] = None
+    oss_prefix: Optional[str] = None
+    oss_addressing_style: Optional[str] = "virtual"
 
     model_config = ConfigDict(from_attributes=True)
 
