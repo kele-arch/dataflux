@@ -135,5 +135,33 @@ class CollectTask(Base, BaseModelMixin):
     mq_batch_timeout_ms: Mapped[int | None] = mapped_column(Integer, nullable=True, default=3000)
     mq_value_format: Mapped[str | None] = mapped_column(String(20), nullable=True, default="json")
 
+    # oss 采集配置
+    oss_endpoint: Mapped[str | None] = mapped_column(String(255), nullable=True,
+                                                     comment="对象存储的 Endpoint 地址 (如: https://oss-cn-hangzhou.aliyuncs.com)")
+
+    oss_access_key: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="访问密钥 AccessKeyId")
+
+    oss_secret_key: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="私有密钥 AccessKeySecret")
+
+    oss_bucket: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="存储桶 Bucket 名称")
+
+    oss_region: Mapped[str | None] = mapped_column(String(64), nullable=True,
+                                                   comment="存储区域 Region (如: cn-hangzhou),部分私有 S3 必须指定")
+
+    oss_object_key: Mapped[str | None] = mapped_column(String(500), nullable=True,
+                                                       comment="单文件模式: 指定要拉取的完整对象路径 (如: data/2026/config.json)")
+
+    oss_prefix: Mapped[str | None] = mapped_column(String(500), nullable=True,
+                                                   comment="批量前缀模式: 指定要拉取的目录前缀 (如: logs/2026-06/)")
+
+    oss_max_keys: Mapped[int | None] = mapped_column(Integer, nullable=True, default=1000,
+                                                     comment="批量模式下单次 API 请求返回的最大对象数量 (用于分页处理)")
+
+    oss_use_ssl: Mapped[int | None] = mapped_column(Integer, nullable=True, default=1,
+                                                    comment="是否通过 HTTPS 加密传输协议连接 (1=是, 0=否)")
+
+    oss_addressing_style: Mapped[str | None] = mapped_column(String(20), nullable=True, default="virtual",
+                                                             comment="寻址风格: virtual=虚拟主机风格(阿里云/AWS常用), path=路径风格(自建 MinIO 常用)")
+
     def __repr__(self) -> str:
         return f"<CollectTask(task_name={self.task_name}, status={self.status})>"
