@@ -95,6 +95,9 @@ async def run_sync_job(ctx, task_id: str):
             # ftp
             ftp_url=task.ftp_url,
             ftp_path=task.ftp_path,
+            ftp_dir=task.ftp_dir,
+            file_pattern=task.file_pattern,
+            is_recursive=bool(task.is_recursive),
             ftp_passive=bool(task.ftp_passive) if task.ftp_passive is not None else True,
             file_parse=bool(task.file_parse),
             file_type=task.file_type,

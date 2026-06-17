@@ -91,6 +91,9 @@ class DBSyncReq(BaseDecryptReq):
     ftp_path: Optional[str] = Field(default=None, description="FTP远程文件路径,如 /data/calico.yaml")
     ftp_passive: int = Field(default=1, description="是否使用FTP被动模式(1是 0否)")
     local_save_dir: Optional[str] = Field(default=None, description="本地存储目录,不填则用配置默认目录")
+    ftp_dir: Optional[str] = Field(default=None, description="批量模式: 远程FTP根目录,如 /factory/logs/")
+    file_pattern: Optional[str] = Field(default="*", description="批量模式: 文件通配符,如 *.csv, log_*.xml")
+    is_recursive: bool = Field(default=False, description="批量模式: 是否递归遍历子目录")
     file_parse: int = Field(default=0, description="是否解析结构化文件内容入库(1是 0否)")
     file_type: Optional[Literal["csv", "json", "yaml", "xlsx", "xml", "auto"]] = Field(
         default="auto",
@@ -233,6 +236,9 @@ class TaskCreateReq(BaseDecryptReq):
     ftp_url: Optional[str] = Field(default=None,
                                    description="FTP完整URL,如 ftp://admin:123456@127.0.0.1:21/data/file.yaml, 传了自动解析覆盖连接参数")
     ftp_path: Optional[str] = Field(default=None, description="FTP远程文件路径,如 /data/report.csv")
+    ftp_dir: Optional[str] = Field(default=None, description="批量模式: 远程FTP根目录")
+    file_pattern: Optional[str] = Field(default="*", description="批量模式: 文件通配符,如 *.csv")
+    is_recursive: int = Field(default=0, description="批量模式: 是否递归子目录, 0/1")
     ftp_passive: int = Field(default=1, description="是否使用FTP被动模式(1是 0否)")
     file_parse: int = Field(default=0, description="是否解析结构化文件内容入库(1是 0否)")
     file_type: Optional[Literal["csv", "json", "yaml", "xlsx", "xml", "auto"]] = Field(default="auto",
@@ -363,6 +369,9 @@ class TaskOut(BaseModel):
     target_db_name: Optional[str] = None
     ftp_url: Optional[str] = None
     ftp_path: Optional[str] = None
+    ftp_dir: Optional[str] = None
+    file_pattern: Optional[str] = "*"
+    is_recursive: Optional[int] = 0
     ftp_passive: Optional[int] = 1
     file_parse: Optional[int] = 0
     file_type: Optional[str] = "auto"

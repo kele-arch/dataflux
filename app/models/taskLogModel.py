@@ -88,8 +88,10 @@ class FtpFileRecord(BaseModelMixin, Base):
     remote_path: Mapped[str] = mapped_column(String(500), nullable=False, comment="FTP远程文件路径")
     local_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True, comment="本地存储绝对路径")
     file_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="文件名")
-    file_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="文件大小(字节)")
+    file_size: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, comment="文件大小(字节)")
     md5: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, comment="文件MD5，用于增量去重")
+    remote_mtime: Mapped[Optional[str]] = mapped_column(String(30), nullable=True, comment="远程文件修改时间，快速去重凭据")
+    remote_size: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, comment="远程文件大小，配合mtime做下载前去重")
     file_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True,
                                                      comment="文件类型: csv/json/yaml/binary")
     is_parsed: Mapped[int] = mapped_column(Integer, default=0, comment="是否已解析入库(0未解析 1已解析)")

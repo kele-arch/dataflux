@@ -66,6 +66,9 @@ class CollectTask(Base, BaseModelMixin):
     ftp_url: Mapped[str | None] = mapped_column(String(500), nullable=True,
                                                 comment="FTP完整URL,传了则自动解析覆盖连接参数")
     ftp_path: Mapped[str | None] = mapped_column(String(500), nullable=True, comment="FTP远程文件路径")
+    ftp_dir: Mapped[str | None] = mapped_column(String(500), nullable=True, comment="批量模式: FTP远程根目录")
+    file_pattern: Mapped[str] = mapped_column(String(100), default="*", comment="批量模式: 文件通配符")
+    is_recursive: Mapped[int] = mapped_column(Integer, default=0, comment="批量模式: 是否递归子目录 0/1")
     ftp_passive: Mapped[bool] = mapped_column(Integer, default=1, comment="是否被动模式(1是 0否)")
     file_parse: Mapped[bool] = mapped_column(Integer, default=0, comment="是否解析文件入库(1是 0否)")
     file_type: Mapped[str] = mapped_column(String(20), default="auto", comment="文件类型: auto/csv/json/yaml")

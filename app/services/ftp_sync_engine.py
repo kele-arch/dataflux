@@ -7,12 +7,13 @@
 # @desc: FTP 文件采集: 支持文件下载、MD5去重、结构化文件解析入库
 
 import csv
+import fnmatch
 import hashlib
 import json
 import os
 import time
 from datetime import datetime
-from ftplib import error_perm
+from ftplib import error_perm, error_reply
 from pathlib import Path
 from typing import Optional
 
@@ -433,49 +434,136 @@ class FtpSyncEngine:
 
     #  对外入口
 
-    def main(self) -> dict:
-        remote_path = getattr(self.req, "ftp_path", None) or self.req.db_name
-        if not remote_path:
-            raise ValueError("FTP 采集必须指定 ftp_path（远程文件路径）")
+    #  目录扫描
 
-        file_name = os.path.basename(remote_path)
+    def _is_sftp(self) -> bool:
+        from app.services.file_client_factory import SftpClientAdapter
+        return isinstance(self.file_client, SftpClientAdapter)
+
+    def _list_dir(self, remote_dir: str) -> list:
+        """获取指定目录下的文件/目录清单 (name, is_dir, mtime, size)"""
+        items = []
+        if self._is_sftp():
+            for attr in self.file_client.sftp.listdir_attr(remote_dir):
+                name = attr.filename
+                if name in (".", ".."):
+                    continue
+                import stat as _stat
+                is_dir = _stat.S_ISDIR(attr.st_mode)
+                mtime = datetime.fromtimestamp(attr.st_mtime).strftime("%Y-%m-%d %H:%M:%S") if attr.st_mtime else None
+                size = attr.st_size if not is_dir else 0
+                items.append((name, is_dir, mtime, size))
+        else:
+            # FTP/FTPS: 优先用 MLSD，回退到 dir()
+            ftp = self.file_client.ftp
+            try:
+                for name, facts in ftp.mlsd(remote_dir):
+                    if name in (".", ".."):
+                        continue
+                    is_dir = facts.get("type") == "dir"
+                    mtime = facts.get("modify")
+                    try:
+                        size = int(facts.get("size", 0))
+                    except ValueError:
+                        size = 0
+                    items.append((name, is_dir, mtime, size))
+            except (error_perm, error_reply):
+                # 服务器不支持 MLSD，回退到 dir() 解析
+                logger.info(f"MLSD 不可用，回退到传统 dir() 解析 [{remote_dir}]")
+                lines = []
+                ftp.dir(remote_dir, lines.append)
+                for line in lines:
+                    parts = line.split(None, 8)
+                    if len(parts) < 9:
+                        continue
+                    name = parts[8]
+                    if name in (".", ".."):
+                        continue
+                    info = parts[0]
+                    is_dir = info.startswith("d")
+                    size = int(parts[4]) if len(parts) > 4 else 0
+                    # dir() 不返回 mtime，设为 None
+                    items.append((name, is_dir, None, size))
+        return items
+
+    def _scan_directory(self, root_dir: str, is_recursive: bool) -> list:
+        """
+        DFS 递归扫描远程目录，返回扁平化的文件路径列表
+        """
+        file_paths = []
+
+        def _scan(dir_path: str):
+            self._check_task_status()
+            try:
+                items = self._list_dir(dir_path)
+            except Exception as e:
+                logger.warning(f"FTP 目录扫描失败 [{dir_path}]: {e}，跳过该目录")
+                return
+
+            dir_path = dir_path.rstrip("/")
+            for name, is_dir, mtime, size in items:
+                full_path = f"{dir_path}/{name}"
+                if is_dir and is_recursive:
+                    _scan(full_path)
+                elif not is_dir:
+                    file_paths.append({
+                        "remote_path": full_path,
+                        "file_name": name,
+                        "remote_size": size,
+                        "remote_mtime": mtime,
+                    })
+
+        _scan(root_dir.rstrip("/"))
+        logger.info(f"FTP 目录扫描完成 [{root_dir}]，递归={is_recursive}, 发现 {len(file_paths)} 个文件")
+        return file_paths
+
+    #  单文件处理流程（单文件模式 / 批量模式复用）
+
+    def _process_single_file(
+            self, db, remote_path: str, file_name: str,
+            remote_mtime: Optional[str], remote_size: Optional[int],
+            target_table_name: str
+    ) -> dict:
+        """处理单个文件: 去重 → 下载 → 解析，返回该文件的统计"""
+        task_id = str(self.req.task_id)
         local_path = self._build_local_path(remote_path)
         file_type = self._detect_file_type(file_name)
-        task_id = str(self.req.task_id)
 
-        logger.info(f"启动 FTP 采集, 源: ftp://{self.req.host}{remote_path}")
+        existing = self._get_file_record(db, task_id, remote_path)
 
-        db = SessionLocal()
-        start_time = time.time()
+        # 快速去重: 远程 mtime + size 都对得上 → 跳过下载
+        if existing and remote_mtime and remote_size:
+            if (existing.remote_mtime == remote_mtime
+                    and existing.remote_size == remote_size):
+                logger.info(f"FTP 快速去重命中（mtime+size）, 跳过: {remote_path}")
+                return {"status": "skipped_fast", "records": 0}
 
-        try:
-            # 查历史记录
-            existing_record = self._get_file_record(db, task_id, remote_path)
+        # 下载 + MD5 去重
+        file_size = self.file_client.download(remote_path, local_path, self._check_task_status)
+        new_md5 = self._compute_md5(local_path)
 
-            # 多协议连接 (FTP/FTPS/SFTP/SDTP 自动适配)
-            self._connect_client()
+        if existing and existing.md5 == new_md5:
+            logger.info(f"FTP MD5 去重命中, 跳过: {remote_path}")
+            return {"status": "skipped", "records": 0}
 
-            # 下载文件 (带毫秒级状态探针)
+        self._save_file_record(db, {
+            "task_id": task_id,
+            "remote_path": remote_path,
+            "local_path": local_path,
+            "file_name": file_name,
+            "file_size": file_size,
+            "md5": new_md5,
+            "remote_mtime": remote_mtime,
+            "remote_size": remote_size,
+            "file_type": file_type,
+            "is_parsed": 0,
+            "parsed_rows": 0,
+        })
+
+        parsed_rows = 0
+        if getattr(self.req, "file_parse", False) and file_type != "binary":
             self._check_task_status()
-            file_size = self.file_client.download(remote_path, local_path, self._check_task_status)
-
-            # 计算 MD5
-            new_md5 = self._compute_md5(local_path)
-            logger.info(f"文件 MD5: {new_md5}")
-
-            # MD5 去重判断
-            if existing_record and existing_record.md5 == new_md5:
-                logger.info(f"文件未变更（MD5 相同）, 跳过处理: {remote_path}")
-                return {
-                    "status": "skipped",
-                    "message": "文件 MD5 未变更, 跳过",
-                    "tables_synced": 0,
-                    "total_records": 0,
-                    "new_watermark": new_md5,
-                    "table_details": []
-                }
-
-            # 更新文件记录
+            parsed_rows = self._parse_and_ingest(local_path, file_type)
             self._save_file_record(db, {
                 "task_id": task_id,
                 "remote_path": remote_path,
@@ -483,47 +571,106 @@ class FtpSyncEngine:
                 "file_name": file_name,
                 "file_size": file_size,
                 "md5": new_md5,
+                "remote_mtime": remote_mtime,
+                "remote_size": remote_size,
                 "file_type": file_type,
-                "is_parsed": 0,
-                "parsed_rows": 0,
+                "is_parsed": 1,
+                "parsed_rows": parsed_rows,
             })
 
-            # 结构化文件解析入库
-            parsed_rows = 0
-            file_parse = getattr(self.req, "file_parse", False)
+        return {"status": "success", "records": parsed_rows, "size": file_size}
 
-            if file_parse and file_type != "binary":
-                self._check_task_status()
-                parsed_rows = self._parse_and_ingest(local_path, file_type)
+    #  对外入口
 
-                # 更新解析状态
-                self._save_file_record(db, {
-                    "task_id": task_id,
+    def main(self) -> dict:
+        ftp_dir = getattr(self.req, "ftp_dir", None)
+        remote_path = getattr(self.req, "ftp_path", None) or self.req.db_name
+
+        # 单文件模式: ftp_path 或 db_name 有值且不含通配特征
+        is_batch = bool(ftp_dir)
+        if not is_batch and not remote_path:
+            raise ValueError("FTP 采集必须指定 ftp_path（单文件）或 ftp_dir（批量）")
+
+        task_id = str(self.req.task_id)
+        target_table_name = self.req.target_table or f"ftp_{Path(remote_path or ftp_dir or 'root').stem}"
+        db = SessionLocal()
+        start_time = time.time()
+
+        try:
+            self._connect_client()
+
+            if is_batch:
+                # ---- 批量模式 ----
+                file_pattern = getattr(self.req, "file_pattern", "*") or "*"
+                is_recursive = bool(getattr(self.req, "is_recursive", False))
+                logger.info(
+                    f"FTP 批量采集: dir={ftp_dir}, pattern={file_pattern}, recursive={is_recursive}"
+                )
+
+                candidates = self._scan_directory(ftp_dir, is_recursive)
+                # 通配符过滤
+                target_files = [
+                    f for f in candidates
+                    if fnmatch.fnmatch(f["file_name"], file_pattern)
+                ]
+                logger.info(
+                    f"FTP 通配符过滤: {len(candidates)} 候选 → {len(target_files)} 匹配 (pattern={file_pattern})"
+                )
+            else:
+                # ---- 单文件模式 ----
+                target_files = [{
                     "remote_path": remote_path,
-                    "local_path": local_path,
-                    "file_name": file_name,
-                    "file_size": file_size,
-                    "md5": new_md5,
-                    "file_type": file_type,
-                    "is_parsed": 1,
-                    "parsed_rows": parsed_rows,
-                })
+                    "file_name": os.path.basename(remote_path),
+                    "remote_size": None,
+                    "remote_mtime": None,
+                }]
+
+            if not target_files:
+                logger.warning("未找到任何待采集的文件")
+                return {
+                    "status": "success", "tables_synced": 0, "total_records": 0,
+                    "new_watermark": None, "table_details": []
+                }
+
+            table_details = []
+            total_records = 0
+            skipped = 0
+
+            for f in target_files:
+                self._check_task_status()
+                try:
+                    result = self._process_single_file(
+                        db, f["remote_path"], f["file_name"],
+                        f.get("remote_mtime"), f.get("remote_size"),
+                        target_table_name,
+                    )
+                    if result["status"] in ("skipped", "skipped_fast"):
+                        skipped += 1
+                    else:
+                        total_records += result["records"]
+                        table_details.append({
+                            "name": f["file_name"],
+                            "target_name": target_table_name,
+                            "records": result["records"],
+                            "cost_seconds": None,
+                            "high_watermark": None,
+                        })
+                except Exception as e:
+                    logger.error(f"FTP 文件 [{f['remote_path']}] 处理失败: {e}")
+                    continue
 
             elapsed = round(time.time() - start_time, 2)
-            logger.info(f"FTP 采集完成, 耗时 {elapsed}s, 解析行数: {parsed_rows}")
+            logger.info(
+                f"FTP 采集完成，共 {len(target_files)} 个文件, "
+                f"跳过 {skipped} 个, 写入 {total_records} 条, 耗时 {elapsed}s"
+            )
 
             return {
                 "status": "success",
-                "tables_synced": 1 if parsed_rows > 0 else 0,
-                "total_records": parsed_rows,
-                "new_watermark": new_md5,  # 用 MD5 作为水位线
-                "table_details": [{
-                    "name": file_name,
-                    "target_name": getattr(self.req, "target_table", None) or f"ftp_{Path(local_path).stem}",
-                    "records": parsed_rows,
-                    "cost_seconds": elapsed,
-                    "high_watermark": new_md5
-                }]
+                "tables_synced": 1 if total_records > 0 else 0,
+                "total_records": total_records,
+                "new_watermark": None,
+                "table_details": table_details,
             }
 
         except (TaskPausedException, TaskCancelledException):
@@ -540,5 +687,4 @@ class FtpSyncEngine:
         finally:
             if self.file_client:
                 self.file_client.close()
-                logger.info("文件客户端连接已关闭")
             db.close()
