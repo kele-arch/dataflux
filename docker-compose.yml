@@ -1,0 +1,143 @@
+# ============================================================
+#  dataflux — 异构数据采集平台 Docker 部署
+#
+#  启动: docker compose up -d
+#  查看: docker compose logs -f dataflux
+#  停止: docker compose down
+# ============================================================
+
+services:
+  # ==========================================================
+  #  主服务 — FastAPI + ARQ Worker + Whisper(子进程隔离版)
+  # ==========================================================
+  dataflux:
+    image: dataflux:0.9.1
+    container_name: dataflux
+    ports:
+      - "8028:8028"
+    environment:
+      - ENV=development
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8028
+      - LOG_LEVEL=info
+      
+      # 将 localhost 替换为了 Docker 网络内的服务名
+      # 数据库
+      - DATABASE_URL=postgresql+psycopg2://postgres:654321@postgres:5432/dataflux
+      - COLLECTED_DATABASE_URL=postgresql+psycopg2://postgres:654321@postgres:5432/dataflux_collected
+      # Redis (注意这里也从 127.0.0.1 改为了 redis)
+      - REDIS_URL=redis://redis:6379/8
+      # InfluxDB
+      - INFLUX_URL=http://influxdb:8086
+      - INFLUX_TOKEN=apiv3_QFChw4KEwrJPBr_VA2U1Kc0HLCCFVimOoPK9d_PcVJ9SG9_5pq06l-Mx-dpXcaCAdW8u4XL45pNsezO2ybzjlg
+      - INFLUX_DB=testdb
+      
+      # 平台安全配置
+      - SECRET_KEY=abc123xyz456def789ghi012jkl345mno678pqr901stu234vwx567yz
+      - ENABLE_DB_CHECK=False
+      - ENABLE_ENCRYPT=False
+      - ENABLE_TOKEN=False
+      
+      # Whisper 大模型算力配置
+      - WHISPER_MODEL_PATH=/app/large-v3  # 指向容器内部挂载的路径
+      - WHISPER_DEVICE=cuda
+      - WHISPER_COMPUTE_TYPE=float16
+      
+      # 其他系统配置
+      - BATCH_SIZE=10
+      - FTP_LOCAL_SAVE_DIR=/app/ftp_files
+      - TIMEZONE=Asia/Shanghai
+    volumes:
+      - ftp_data:/app/ftp_files
+      - oss_data:/app/data/oss_files
+      # [关键挂载] 将当前目录下的模型文件挂载进容器, 避免找不到模型
+      - ./large-v3:/app/large-v3 
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - dataflux-net
+    
+    # [GPU 配置] 允许容器访问宿主机的 NVIDIA GPU 以执行 CUDA 推理
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # ==========================================================
+  #  PostgreSQL — 元数据 + 采集落地
+  # ==========================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: dataflux-pg
+    environment:
+
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 654321
+      POSTGRES_DB: dataflux
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      # 初始化脚本: 在此脚本中创建 dataflux_collected 库
+      - ./docker/pg-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d dataflux"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - dataflux-net
+
+  # ==========================================================
+  #  Redis — ARQ 队列 / 分布式锁 / 控制信号 / 水位线
+  # ==========================================================
+  redis:
+    image: redis:7-alpine
+    container_name: dataflux-redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - dataflux-net
+
+  # ==========================================================
+  #  InfluxDB 3-core — 监控时序数据
+  # ==========================================================
+  influxdb:
+    image: influxdb:3-core
+    container_name: dataflux-influx
+    # InfluxDB 容器内默认是 8086 端口,这里映射到宿主机的 8181
+    ports:
+      - "8181:8086"
+    volumes:
+      - influx_data:/var/lib/influxdb2
+    restart: unless-stopped
+    networks:
+      - dataflux-net
+
+volumes:
+  pg_data:
+  redis_data:
+  influx_data:
+  ftp_data:
+  oss_data:
+
+networks:
+  dataflux-net:
+    driver: bridge
