@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     INFLUX_TOKEN: str = "apiv3_QFChw4KEwrJPBr_......"
     INFLUX_DB: str = "testdb"
 
+    # Whisper ASR 模型配置
+    WHISPER_MODEL_PATH: str = "./large-v3"
+    WHISPER_DEVICE: str = "cuda"  # 没有GPU改成 cpu
+    WHISPER_COMPUTE_TYPE: str = "=float16"  # cpu改成 int8
 
     class Config:
         env_file = project_rootpath / '.env'
