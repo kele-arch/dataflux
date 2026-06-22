@@ -44,6 +44,7 @@ ENV PATH="/app/.venv/bin:$PATH"
 COPY app/ ./app/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
+COPY static/ ./static/
 
 # 创建持久化目录 (赋予足够权限防写报 Error)
 RUN mkdir -p /app/ftp_files /app/data/oss_files \
