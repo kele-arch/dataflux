@@ -5365,3 +5365,125 @@ const children = await fetch("/api/v1/datasource/oss/tree", {
 | 调试采集任务 | 查 `sys_task_log` 或 `kafka_test_data` 等目标表确认数据已入库 |
 | 快速搜索 | `/tables/list` 传 `keyword` 快速定位包含特定关键词的表 |
 
+
+
+---
+
+## 二十、音视频解析 `/media`
+
+> ⚠️ **状态：代码已完成，尚未测试。** 依赖系统安装 `ffmpeg` 命令行工具 + Whisper 模型文件（`faster-whisper`）。
+
+本模块提供独立的音视频转写能力，与 FTP 采集引擎中的自动转写共用同一套底层（`media_converter` + `WhisperASR`），但触发方式和输出不同：
+
+| 维度 | API 手动转写 | FTP 自动转写 |
+|------|-------------|-------------|
+| **触发方式** | 前端手动上传文件 → `POST /media/transcribe` | FTP 采集任务 → `file_type=video/audio` → 引擎自动调用 `_transcribe_and_ingest` |
+| **生效阶段** | 用户主动操作，即时 | 任务执行时，批量 |
+| **输入** | `multipart/form-data` 文件上传 | FTP 下载到本地的媒体文件 |
+| **输出** | 直接返回 JSON 文本 | 文本存入 PG 采集表（`raw_doc` JSON 列） |
+| **清理** | 临时上传文件 + 临时 WAV 均删除 | 原始文件保留，仅删除临时 WAV |
+
+### 1. 上传文件并获取转写文本
+
+`POST /media/transcribe`
+
+**请求：** `multipart/form-data`
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| file | file(binary) | ✅ | — | 音视频文件，支持 mp4/mkv/avi/mov/flv/wmv/mp3/wav/m4a/aac/flac |
+| language | string | ❌ | `"zh"` | 语言代码：`zh`(中文) / `en`(英文) / `ja`(日文) 等 |
+
+**cURL 示例：**
+
+```bash
+curl -X POST http://localhost:8028/api/v1/media/transcribe \
+  -F "file=@recording.mp3" \
+  -F "language=zh"
+```
+
+**响应：**
+
+```json
+{
+  "code": 1,
+  "msg": "转写成功",
+  "data": {
+    "file_name": "recording.mp3",
+    "file_type": "audio",
+    "text": "今天下午三点召开项目评审会议请各部门负责人准时参加",
+    "text_length": 25
+  }
+}
+```
+
+**错误响应（不支持的文件类型）：**
+
+```json
+{
+  "code": 0,
+  "msg": "不支持的文件类型 (.pdf)，支持: mp4/mkv/avi/mov/mp3/wav/m4a/aac/flac"
+}
+```
+
+---
+
+### 2. 内部处理流程
+
+```
+POST /media/transcribe
+  │
+  ├─ 1. 保存上传文件到临时目录 (NamedTemporaryFile)
+  ├─ 2. 检测文件类型:
+  │     ├─ is_video() → file_type = "video"
+  │     ├─ is_audio() → file_type = "audio"
+  │     └─ 其他       → 拒绝，删除临时文件
+  │
+  └─ 3. asyncio.to_thread(_sync_transcribe):    ← 不阻塞主事件循环
+        ├─ ffmpeg 转 WAV (16kHz, mono, pcm_s16le)
+        │   └─ 已 WAV 直接跳过转换
+        ├─ Whisper 模型转写 (VAD 过滤 + 繁转简)
+        ├─ 清理临时 WAV
+        └─ 清理上传文件
+        ↓
+     返回 {file_name, file_type, text, text_length}
+```
+
+---
+
+### 3. 环境依赖
+
+| 依赖 | 用途 | 安装 |
+|------|------|------|
+| `ffmpeg` | 视频提取音轨 / 音频格式统一转 WAV | `apt install ffmpeg` 或下载二进制加入 PATH |
+| `faster-whisper` | Whisper 语音识别模型 | `uv sync`（已在 pyproject.toml） |
+| Whisper 模型文件 | 转写核心（large-v3 约 3GB） | 首次调用自动下载，或手动放到 `WHISPER_MODEL_PATH` |
+| `opencc` | 繁体中文→简体中文 | `uv sync`（已在 pyproject.toml） |
+
+**`.env` 可选配置：**
+
+```env
+WHISPER_MODEL_PATH=./large-v3
+WHISPER_DEVICE=cuda
+WHISPER_COMPUTE_TYPE=float16
+```
+
+---
+
+### 4. 与 FTP 采集的联动说明
+
+FTP 采集任务配置了 `file_parse=1` 且采集到视频/音频文件时，引擎会在**后台自动**走同一套转写流程，结果存入 PG 目标表而非直接返回：
+
+```json
+// FTP 目标表 raw_doc 列的内容:
+{
+  "file_name": "meeting.mp4",
+  "file_type": "video",
+  "transcribed_text": "今天下午三点...",
+  "text_length": 25,
+  "transcribed_at": "2026-06-22T15:30:00"
+}
+```
+
+> API 接口用于**即时预览测试**，FTP 引擎用于**批量自动采集**——两套触发方式，共享同一底层。
+
