@@ -6,6 +6,7 @@
 # Copyright (c) 2026 by 胡H, All Rights Reserved.
 # @desc: FTP 文件采集: 支持文件下载、MD5去重、结构化文件解析入库
 
+import asyncio
 import csv
 import fnmatch
 import hashlib
@@ -155,6 +156,10 @@ class FtpSyncEngine:
             "xlsx": "xlsx",
             "xls": "xlsx",
             "xml": "xml",
+            "mp4": "video", "mkv": "video", "avi": "video",
+            "mov": "video", "flv": "video", "wmv": "video",
+            "mp3": "audio", "wav": "audio", "m4a": "audio",
+            "aac": "audio", "flac": "audio",
         }
         return type_map.get(ext, "binary")
 
@@ -381,6 +386,14 @@ class FtpSyncEngine:
             rows = [_xml_to_dict(root)]
             total_inserted = self._ingest_memory_rows(rows, target_table)
             logger.info(f"XML 解析成功, 共 {total_inserted} 条")
+            return total_inserted
+
+        # 处理音视频
+        elif file_type in ("video", "audio"):
+            total_inserted = self._transcribe_and_ingest(
+                local_path, file_type, target_table
+            )
+            logger.info(f"音视频转写完成, 写入 {total_inserted} 条")
             return total_inserted
 
         else:
@@ -690,3 +703,53 @@ class FtpSyncEngine:
             if self.file_client:
                 self.file_client.close()
             db.close()
+
+    def _transcribe_and_ingest(self, local_path: str, file_type: str, target_table: Table) -> int:
+        """
+        音视频文件转写为文字并入库(进程隔离沙箱)
+        ffmpeg + Whisper 在独立子进程中运行,崩溃不影响主 Worker
+        """
+        from app.services.media.sandbox import run_whisper_in_sandbox
+        from app.core.config import settings
+
+        logger.info(f"开始音视频转写(沙箱模式): {local_path}")
+
+        try:
+            text = asyncio.run(
+                run_whisper_in_sandbox(
+                    local_path,
+                    language="zh",
+                    timeout=300,
+                    model_path=getattr(settings, "WHISPER_MODEL_PATH", "./large-v3"),
+                    device=getattr(settings, "WHISPER_DEVICE", "cuda"),
+                    compute_type=getattr(settings, "WHISPER_COMPUTE_TYPE", "float16"),
+                    simplified=True,
+                )
+            )
+        except Exception as e:
+            logger.error(f"音视频转写失败 [{local_path}]: {e}")
+            raise
+
+        if not text:
+            logger.warning(f"音视频识别结果为空: {local_path}")
+            return 0
+
+        # 构建入库数据
+        row = {
+            "file_name": Path(local_path).name,
+            "file_type": file_type,
+            "transcribed_text": text,
+            "text_length": len(text),
+            "transcribed_at": datetime.now().isoformat(),
+        }
+
+        with self.target_engine.begin() as conn:
+            batch = [{
+                "id": self._generate_row_id(row),
+                "raw_doc": self._sanitize_for_jsonb(row)
+            }]
+            stmt = pg_insert(target_table).values(batch).on_conflict_do_nothing(index_elements=["id"])
+            conn.execute(stmt)
+
+        logger.info(f"识别完成, 文本长度: {len(text)} 字")
+        return 1
