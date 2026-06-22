@@ -163,14 +163,15 @@ class FtpSyncEngine:
     def _prepare_parse_target_table(self, table_name: str) -> Table:
         """
         为结构化文件内容准备目标表
-        统一用两列结构: id(UUID PK) + raw_doc(JSON)
-        如果表已存在则跳过建表
+        id UUID PK + collected_at 时间戳 + raw_doc JSON
+        collected_at 用于数据生命周期管理（按天/按条数自动清理）
         """
         metadata = MetaData()
         table = Table(
             table_name,
             metadata,
             Column("id", String(32), primary_key=True),
+            Column("collected_at", String(30), nullable=False, default=datetime.now.isoformat),
             Column("raw_doc", JSON, nullable=False),
         )
         metadata.create_all(bind=self.target_engine, checkfirst=True)
@@ -252,7 +253,11 @@ class FtpSyncEngine:
                 self._check_task_status()
 
                 batch = rows[i: i + self.batch_size]
-                batch_data = [{"id": self._generate_row_id(row), "raw_doc": row} for row in batch]
+                now_iso = datetime.now().isoformat()
+                batch_data = [
+                    {"id": self._generate_row_id(row), "collected_at": now_iso, "raw_doc": row}
+                    for row in batch
+                ]
 
                 stmt = pg_insert(target_table).values(batch_data).on_conflict_do_nothing(index_elements=['id'])
                 conn.execute(stmt)
@@ -391,11 +396,18 @@ class FtpSyncEngine:
         """ 将内存中的 list (JSON/YAML) 分批写入 """
         if not rows: return 0
         total = 0
+        now = datetime.now().isoformat()
         with self.target_engine.begin() as conn:
             for i in range(0, len(rows), self.batch_size):
                 self._check_task_status()
-                batch = [{"id": self._generate_row_id(row), "raw_doc": self._sanitize_for_jsonb(row)} for row in
-                         rows[i: i + self.batch_size]]
+                batch = [
+                    {
+                        "id": self._generate_row_id(row),
+                        "collected_at": now,
+                        "raw_doc": self._sanitize_for_jsonb(row),
+                    }
+                    for row in rows[i: i + self.batch_size]
+                ]
                 stmt = pg_insert(target_table).values(batch).on_conflict_do_nothing(index_elements=['id'])
                 conn.execute(stmt)
                 total += len(batch)

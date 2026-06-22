@@ -214,7 +214,8 @@ class OssSyncEngine:
             table_name,
             metadata,
             Column("id", String(32), primary_key=True),
-            Column("source_key", String(500), nullable=True),  # 记录来源对象Key
+            Column("collected_at", String(30), nullable=False, default=datetime.now.isoformat),
+            Column("source_key", String(500), nullable=True),
             Column("raw_doc", JSON, nullable=False),
         )
         metadata.create_all(bind=self.target_engine, checkfirst=True)
@@ -225,14 +226,16 @@ class OssSyncEngine:
         if not rows:
             return 0
         total = 0
+        now = datetime.now().isoformat()
         with self.target_engine.begin() as conn:
             for i in range(0, len(rows), self.batch_size):
                 self._check_task_status()
                 batch = [
                     {
                         "id": self._generate_row_id(row),
+                        "collected_at": now,
                         "source_key": source_key,
-                        "raw_doc": self._sanitize_for_json(row)
+                        "raw_doc": self._sanitize_for_json(row),
                     }
                     for row in rows[i: i + self.batch_size]
                 ]

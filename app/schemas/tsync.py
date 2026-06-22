@@ -316,6 +316,12 @@ class TaskCreateReq(BaseDecryptReq):
     oss_use_ssl: Optional[int] = Field(default=1, description="是否HTTPS: 0/1")
     oss_addressing_style: Optional[str] = Field(default="virtual", description="virtual/path")
 
+    # 数据清理策略
+    clean_policy: Optional[str] = Field(default="none", description="清理策略: none/by_days/by_count")
+    clean_keep_days: Optional[int] = Field(default=None, description="按天保留: 保留最近N天")
+    clean_keep_count: Optional[int] = Field(default=None, description="按条数保留: 保留最新N条")
+    clean_cron: Optional[str] = Field(default=None, description="自动清理Cron表达式,如 '0 3 * * *'")
+
 
 class TaskUpdateReq(TaskCreateReq):
     task_id: str = Field(..., min_length=32, max_length=32, description="要更新的任务ID(UUID)")
@@ -427,6 +433,10 @@ class TaskOut(BaseModel):
     oss_object_key: Optional[str] = None
     oss_prefix: Optional[str] = None
     oss_addressing_style: Optional[str] = "virtual"
+    clean_policy: Optional[str] = "none"
+    clean_keep_days: Optional[int] = None
+    clean_keep_count: Optional[int] = None
+    clean_cron: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -447,6 +457,17 @@ class DashboardOut(BaseModel):
     success_rate: float
 
 
+# endregion
+
+# region ---- 数据清理 ----
+class TaskCleanReq(BaseModel):
+    task_id: str = Field(..., min_length=32, max_length=32)
+    action: Literal["truncate", "drop", "by_days", "by_count"] = Field(
+        ..., description="清理操作: truncate=清空 drop=删表 by_days=按天 by_count=按条数"
+    )
+    keep_days: Optional[int] = Field(default=None, description="by_days模式: 保留最近N天")
+    keep_count: Optional[int] = Field(default=None, description="by_count模式: 保留最新N条")
+    clean_files: bool = Field(default=True, description="是否同时清理本地缓存文件")
 # endregion
 
 # region ---- 文件同步记录查询 ----

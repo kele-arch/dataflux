@@ -23,14 +23,22 @@ scheduler = AsyncIOScheduler(timezone=settings.TIMEZONE)
 
 async def trigger_task_to_arq(task_id: str):
     """
-    时间一到, 不执行业务, 直接把 task_id 扔进 ARQ 队列 
+    时间一到, 不执行业务, 直接把 task_id 扔进 ARQ 队列
     """
     if arq_module.arq_pool:
-        # 'run_sync_job' 是要在 worker 里注册的函数名
         await arq_module.arq_pool.enqueue_job('run_sync_job', task_id)
         logger.info(f"定时器触发: 任务 [{task_id}] 已推入 ARQ 执行队列")
     else:
         logger.error("ARQ 连接池未初始化, 无法下发任务")
+
+
+async def trigger_clean_job(task_id: str):
+    """定时清理触发函数"""
+    if arq_module.arq_pool:
+        await arq_module.arq_pool.enqueue_job('run_clean_job', task_id)
+        logger.info(f"定时清理触发: 任务 [{task_id}] 已推入 ARQ 执行队列")
+    else:
+        logger.error("ARQ 连接池未初始化, 无法下发清理任务")
 
 
 def refresh_scheduler_jobs():
@@ -71,6 +79,22 @@ def refresh_scheduler_jobs():
                 logger.error(f"任务 [{task.id}] 的时间表达式解析失败，已跳过: {ve}")
             except Exception as e:
                 logger.error(f"任务 [{task.id}] 挂载定时器失败: {e}")
+
+            # 数据清理定时调度(独立于采集调度)
+            if (task.clean_policy and task.clean_policy != "none"
+                    and task.clean_cron and task.clean_cron.strip()):
+                try:
+                    clean_trigger = CronTrigger.from_crontab(task.clean_cron)
+                    scheduler.add_job(
+                        trigger_clean_job,
+                        trigger=clean_trigger,
+                        args=[str(task.id)],
+                        id=f"clean_job_{task.id}",
+                        replace_existing=True
+                    )
+                    logger.info(f"任务 [{task.id}] 已注册清理调度: {task.clean_cron}")
+                except Exception as e:
+                    logger.error(f"任务 [{task.id}] 清理Cron解析失败: {e}")
 
         logger.info(f"调度器刷新完成, 当前共有 {count} 个活跃定时任务")
     finally:
