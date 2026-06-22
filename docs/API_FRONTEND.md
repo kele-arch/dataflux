@@ -287,6 +287,10 @@
 | target_username | string | ❌ | 目标库账号（仅 `target_type=mongodb` 时生效） |
 | target_password | string | ❌ | 目标库密码（仅 `target_type=mongodb` 时生效） |
 | target_db_name | string | ❌ | 目标库名（仅 `target_type=mongodb` 时生效） |
+| clean_policy | string | ❌ | 清理策略：`none`（默认）/ `by_days` / `by_count`。⚠️ 分支功能，详见[DLM](#15-数据生命周期管理dlm) |
+| clean_keep_days | int | ❌ | `by_days` 模式：保留最近 N 天数据 |
+| clean_keep_count | int | ❌ | `by_count` 模式：保留最新 N 条数据 |
+| clean_cron | string | ❌ | 自动清理 Cron 表达式，如 `"0 3 * * *"` |
 
 #### 采集模式详解 (`collect_mode`)
 
@@ -906,6 +910,174 @@ const timer = setInterval(async () => {
    - is_parsed=1 → 绿色徽章"已解析"；=0 → 灰色"仅下载"
    - parsed_rows 列展示解析行数
    - md5 列可 hover 查看完整哈希
+```
+
+---
+
+### 15. 数据生命周期管理（DLM）
+
+> ⚠️ **分支状态：** 此功能目前在 `feature/clean` 分支，尚未合并 `master`。数据库需执行 `ALTER TABLE sys_collect_task ADD COLUMN ...` 后方可使用（SQL 见本章末尾）。
+
+平台支持两种数据清理模式：**手动清理**（大扫除）和**定时自动清理**（扫地机器人）。清理操作覆盖三个层面：采集数据表、元数据日志（`ftp_file_record` / `oss_file_record`）、本地物理文件。
+
+---
+
+#### 15.1 手动清理（大扫除模式）
+
+`POST /tsync/clean`
+
+用户在前端点击"清理数据"按钮，选择清理方式，后台即时执行。
+
+```json
+// TRUNCATE — 清空表数据，保留表结构
+{
+  "task_id": "550e8400e29b41d4a716446655440000",
+  "action": "truncate",
+  "clean_files": true
+}
+
+// DROP — 彻底删除整张表
+{
+  "task_id": "550e8400e29b41d4a716446655440000",
+  "action": "drop",
+  "clean_files": true
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| task_id | string | ✅ | 任务 UUID（32位） |
+| action | string | ✅ | `truncate`=清空数据保留结构 / `drop`=删除整张表 |
+| clean_files | bool | ❌ | 是否同时清理本地下载缓存文件，默认 `true` |
+
+响应：
+
+```json
+{
+  "code": 1,
+  "msg": "清理完成",
+  "data": {
+    "tables_cleaned": [
+      {"status": "success", "action": "truncate", "table": "ftp_batch_data"}
+    ],
+    "file_records_deleted": 156,
+    "local_files_deleted": 52,
+    "task_id": "550e8400e29b41d4a716446655440000",
+    "cleaned_at": "2026-06-22T15:30:00"
+  }
+}
+```
+
+**三层清理联动：**
+
+```
+POST /tsync/clean
+  ├─ 1. 解析目标表 → TRUNCATE 或 DROP
+  │     └─ 动态表名场景：自动扫描采集库 ftp_*/oss_* 前缀，防止遗漏
+  ├─ 2. 清理 ftp_file_record + oss_file_record 元数据日志
+  └─ 3. 删除 ftp_files/{task_id}/ 和 data/oss_files/{task_id}/ 本地缓存
+```
+
+---
+
+#### 15.2 定时自动清理（扫地机器人模式）
+
+用户在创建/编辑任务时勾选"开启数据生命周期管理"，配置保留策略和清理时间。后台 `APScheduler` + `ARQ Worker` 自动执行，无需人工干预。
+
+**任务创建时配置清理策略：**
+
+```json
+POST /tsync/add
+{
+  "task_name": "每日传感器日志",
+  "...": "...",
+  "clean_policy": "by_days",
+  "clean_keep_days": 30,
+  "clean_cron": "0 3 * * *"
+}
+```
+
+**清理策略字段（新增）：**
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| clean_policy | string | ❌ | `"none"` | 清理策略：`none`=不清理 / `by_days`=按天保留 / `by_count`=按条数保留 |
+| clean_keep_days | int | ❌ | — | `by_days` 模式：保留最近 N 天的数据 |
+| clean_keep_count | int | ❌ | — | `by_count` 模式：保留最新 N 条数据 |
+| clean_cron | string | ❌ | — | 自动清理的 Cron 表达式（如 `"0 3 * * *"` 每天凌晨 3 点） |
+
+> **注意：** `clean_cron` 会在 API 层做格式合法性校验，非法表达式（如 `* * * * * *`）创建时直接拦截。
+
+**两种保留策略对比：**
+
+| 策略 | clean_policy | 依赖字段 | 工作原理 |
+|------|-------------|----------|----------|
+| 按天保留 | `"by_days"` | `clean_keep_days` + `clean_cron` | `DELETE WHERE collected_at < now() - N天` |
+| 按条数保留 | `"by_count"` | `clean_keep_count` + `clean_cron` | 子查询找出第 N 条的 `collected_at` 边界，删除更早的数据 |
+
+**定时清理完整链路：**
+
+```
+APScheduler(clean_cron 到点)
+  → trigger_clean_job(task_id)
+    → ARQ enqueue_job('run_clean_job', task_id)
+      → Worker.run_clean_job
+        → 读 clean_policy / keep_days / keep_count
+        → CleanService.clean_task_data()
+          ├─ DELETE FROM table WHERE collected_at < cutoff
+          ├─ 删 ftp_file_record / oss_file_record
+          └─ 删本地文件目录
+```
+
+**前端 UI 建议：**
+
+```
+任务创建/编辑表单底部新增「数据生命周期管理」区域：
+  ┌─────────────────────────────────────────┐
+  │ ☐ 开启数据生命周期管理                   │
+  │   保留策略: [按天保留 ▼]                 │
+  │   保留天数: [30]                         │
+  │   清理时间: [每天 03:00 ▼]               │
+  └─────────────────────────────────────────┘
+
+任务列表操作列新增「清理数据」按钮：
+  点击 → 弹出确认对话框 → 选择 truncate / drop → 执行
+```
+
+---
+
+#### 15.3 数据库变更 SQL
+
+```sql
+-- 清理策略字段
+ALTER TABLE sys_collect_task
+    ADD COLUMN IF NOT EXISTS clean_policy      VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS clean_keep_days   INTEGER,
+    ADD COLUMN IF NOT EXISTS clean_keep_count  INTEGER,
+    ADD COLUMN IF NOT EXISTS clean_cron        VARCHAR(50);
+
+-- 已有采集表补 collected_at 列（DLM 按天/按条数删除必需）
+DO $$
+DECLARE r RECORD;
+BEGIN
+    FOR r IN
+        SELECT tablename FROM pg_tables
+        WHERE schemaname = 'public'
+          AND (tablename LIKE 'ftp_%' OR tablename LIKE 'oss_%'
+            OR tablename LIKE 'mq_%' OR tablename LIKE 'kafka_%'
+            OR tablename LIKE 'api_%' OR tablename LIKE 'socket_%'
+            OR tablename LIKE 'mqtt_%' OR tablename LIKE 'rabbitmq_%'
+            OR tablename LIKE 'snmp_%')
+    LOOP
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name=r.tablename
+              AND column_name='collected_at'
+        ) THEN
+            EXECUTE format('ALTER TABLE %I ADD COLUMN collected_at VARCHAR(30)', r.tablename);
+        END IF;
+    END LOOP;
+END $$;
 ```
 
 ---
