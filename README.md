@@ -1,14 +1,16 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/hh-macro/dataflux/master/static/logo-dark.png">
-  <img alt="Dataflux" src="https://raw.githubusercontent.com/hh-macro/dataflux/master/static/logo.png" height="80">
+  <source media="(prefers-color-scheme: dark)" srcset="static/logo-dark.svg">
+  <img alt="Dataflux" src="static/logo.svg" height="80">
 </picture>
 
 # Dataflux — 一站式异构数据采集平台
 
-[![Python](https://img.shields.io/badge/Python-3.12|3.13-3776AB?style=flat&logo=python&logoColor=white)][python]
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.103+-009688?style=flat&logo=fastapi&logoColor=white)][fastapi]
-[![License](https://img.shields.io/badge/License-MIT-green.svg)][license]
-[![Docker](https://img.shields.io/badge/Docker-supported-2496ED?style=flat&logo=docker&logoColor=white)][docker]
+<p>
+  <a href="https://www.python.org/"><img alt="Python" src="https://img.shields.io/badge/Python-3.12_|_3.13-3776AB?logo=python&logoColor=white"></a>
+  <a href="https://fastapi.tiangolo.com/"><img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-0.103+-009688?logo=fastapi"></a>
+  <a href="https://www.docker.com/"><img alt="Docker" src="https://img.shields.io/badge/Docker-supported-2496ED?logo=docker&logoColor=white"></a>
+  <a href="https://github.com/hh-macro/dataflux"><img alt="Stars" src="https://img.shields.io/github/stars/hh-macro/dataflux?color=ea580c"></a>
+</p>
 
 **Dataflux** 是一个轻量级、插件化的异构数据采集与同步平台。支持 **12 种数据源**，提供任务调度、增量采集、分布式执行、流式消费、数据生命周期管理等完整能力。
 
@@ -288,4 +290,14 @@ dataflux/
 ## 前端
 
 配套前端项目：[**dataflux-web**][frontend]（Vue 3 + Element Plus）
+
+
+[frontend]: https://github.com/hh-macro/dataflux-web
+[license]: LICENSE
+[contributing]: CONTRIBUTING.md
+[env-example]: .env.example
+[project-doc]: docs/PROJECT_DOCUMENTATION.md
+[api-doc]: docs/API_FRONTEND.md
+[db-doc]: docs/DATABASE_TABLES.md
+[clean-test]: docs/CLEAN_SERVICE_TEST.md
 
