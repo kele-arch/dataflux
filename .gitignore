@@ -1,12 +1,47 @@
-/tests/*
-.venv
-app/init.log
-init.log
-/Test/*
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
 .env
+*.local
+
+# Logs
+*.log
+init.log
+
+# Test
+tests/*
+Test/*
+
+# Alembic
+alembic/versions/*
+
+# Data
+data/
+ftp_files/
+tmp/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
 requirements.txt
-/Test
-/alembic/versions/*
-/tmp
-/script
-.idea
+license.key
