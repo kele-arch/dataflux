@@ -128,15 +128,21 @@ E:\AAA-project\dataflux\
 │   │
 │   ├── services/                     # 业务逻辑层
 │   │   ├── __init__.py               # 包标记
-│   │   ├── engine_factory.py         # 同步引擎工厂（7 种引擎路由）
+│   │   ├── engine_factory.py         # 同步引擎工厂（12 种引擎路由）
 │   │   ├── sync_service.py           # 异构关系型数据库同步引擎（DatabaseSyncEngine）
 │   │   ├── mongo_sync_engine.py      # MongoDB 抽取引擎
 │   │   ├── api_sync_engine.py        # HTTP API 采集引擎
 │   │   ├── ftp_sync_engine.py        # FTP/SFTP 文件采集引擎
+│   │   ├── oss_sync_engine.py        # OSS/S3 对象存储采集引擎
 │   │   ├── snmp_sync_engine.py       # SNMP 采集引擎
 │   │   ├── socket_sync_engine.py     # Socket 采集引擎
 │   │   ├── kafka_sync_engine.py      # Kafka 常驻消费引擎
+│   │   ├── mqtt_sync_engine.py       # MQTT 常驻订阅引擎
+│   │   ├── rabbitmq_sync_engine.py   # RabbitMQ 常驻消费引擎
+│   │   ├── clean_service.py          # 采集数据清理服务
 │   │   ├── kafka_manager.py          # Kafka Consumer 生命周期管理器
+│   │   ├── mqtt_manager.py           # MQTT Consumer 生命周期管理器
+│   │   ├── rabbitmq_manager.py       # RabbitMQ Consumer 生命周期管理器
 │   │   ├── scheduler_service.py      # APScheduler 定时调度服务
 │   │   ├── task_control.py           # Redis 任务控制（暂停/取消/水位线）
 │   │   ├── file_client_factory.py    # 多协议文件客户端工厂（FTP/FTPS/SFTP/SDTP）
@@ -165,6 +171,7 @@ E:\AAA-project\dataflux\
 ├── docs/                             # 文档目录
 │   ├── API_FRONTEND.md               # 接口对接文档（前端视角）
 │   ├── DATABASE_TABLES.md            # 数据库表结构文档
+│   ├── CLEAN_SERVICE_TEST.md         # 采集数据清理服务测试指南
 │   └── PROJECT_DOCUMENTATION.md      # 本文档
 │
 ├── build/                            # PyInstaller 构建产物
@@ -287,16 +294,18 @@ E:\AAA-project\dataflux\
 6. **ARQ 队列池** — `init_arq_pool()`
 7. **InfluxDB 连接** — `init_influx()` 连通性检测
 8. **APScheduler 启动** — `scheduler.start()` + `refresh_scheduler_jobs()`
-9. **Kafka 任务自动拉起** — `start_all_kafka_tasks()`
+9. **Kafka/MQTT/RabbitMQ 任务自动拉起** — `start_all_kafka_tasks()` + `start_all_mqtt_tasks()` + `start_all_rabbitmq_tasks()`
 
 **关闭阶段（yield 之后）：**
 
 1. 停止所有 Kafka Consumer — `kafka_manager.stop_all()`
-2. 关闭调度器 — `scheduler.shutdown()`
-3. 关闭 ARQ 池 — `close_arq_pool()`
-4. 关闭 Redis — `close_redis()`
-5. 关闭 MongoDB — `close_mongo()`（5 秒超时）
-6. 关闭 InfluxDB — `close_influx()`
+2. 停止所有 MQTT 订阅 — `mqtt_manager.stop_all()`
+3. 停止所有 RabbitMQ 消费 — `rabbitmq_manager.stop_all()`
+4. 关闭调度器 — `scheduler.shutdown()`
+5. 关闭 ARQ 池 — `close_arq_pool()`
+6. 关闭 Redis — `close_redis()`
+7. 关闭 MongoDB — `close_mongo()`（5 秒超时）
+8. 关闭 InfluxDB — `close_influx()`
 
 ##### `create_app()` — FastAPI 工厂函数
 
@@ -336,11 +345,25 @@ E:\AAA-project\dataflux\
 7. finally: 释放分布式锁
 ```
 
+**核心函数 `run_clean_job(ctx, task_id)`：**
+
+```
+1. 打开数据库连接，查询 CollectTask
+2. 检查 task.clean_policy 是否有效（非 none）
+3. 根据数据源类型推导正确的表名前缀
+   ├─ task.topic_or_table 有值 → 精确表名
+   └─ 无值 → 根据 DataSource.type 查 prefix_map
+        ftp→ftp_  kafka→kafka_  mqtt→mqtt_  rabbitmq→mq_
+        api→api_  oss→oss_  snmp→snmp_  socket→socket_
+4. 调用 clean_service.clean_task_data() 执行清理
+5. 记录日志
+```
+
 **`WorkerSettings` 配置：**
 
 | 配置 | 值 | 说明 |
 |------|-----|------|
-| `functions` | `[run_sync_job]` | 注册的任务函数 |
+| `functions` | `[run_sync_job, run_clean_job]` | 注册的任务函数（同步 + 清理） |
 | `max_jobs` | `3` | 最大并发任务数 |
 | `job_timeout` | `7200` | 任务硬超时 2 小时 |
 | `redis_settings` | 解析自 `REDIS_URL` | ARQ 的 Redis 连接 |
@@ -500,6 +523,10 @@ MongoDB 异步连接管理，基于 Motor（`AsyncIOMotorClient`）。全局单�
 | SNMP | `snmp_version`, `snmp_community`, `snmp_user`, `snmp_auth_key`, `snmp_priv_key`, `snmp_auth_protocol`, `snmp_priv_protocol`, `snmp_extract_mode`, `snmp_metric_oids`, `snmp_table_oids` |
 | Socket | `socket_protocol`, `socket_command`, `socket_command_encoding`, `socket_timeout`, `socket_recv_size`, `socket_terminator`, `socket_response_format` |
 | Kafka | `kafka_bootstrap_servers`, `kafka_topic`, `kafka_group_id`, `kafka_auto_offset_reset`, `kafka_batch_size`, `kafka_batch_timeout_ms`, `kafka_value_format` |
+| MQTT | `mqtt_broker`, `mqtt_port`, `mqtt_topic`, `mqtt_client_id`, `mqtt_qos`, `mqtt_clean_session`, `mqtt_use_tls`, `mqtt_keepalive`, `mqtt_batch_size`, `mqtt_batch_timeout_ms`, `mqtt_value_format` |
+| RabbitMQ | `mq_host`, `mq_port`, `mq_vhost`, `mq_queue`, `mq_exchange`, `mq_exchange_type`, `mq_routing_key`, `mq_durable`, `mq_prefetch_count`, `mq_batch_size`, `mq_batch_timeout_ms`, `mq_value_format` |
+| OSS | `oss_endpoint`, `oss_access_key`, `oss_secret_key`, `oss_bucket`, `oss_region`, `oss_object_key`, `oss_prefix`, `oss_max_keys`, `oss_use_ssl`, `oss_addressing_style` |
+| 清理策略 | `clean_policy` (none/by_days/by_count), `clean_keep_days`, `clean_keep_count`, `clean_cron` |
 
 ---
 
@@ -511,7 +538,9 @@ MongoDB 异步连接管理，基于 Motor（`AsyncIOMotorClient`）。全局单�
 
 **`SyncExecutionLog`** — 表 `sync_execution_log`。每张表的同步执行记录（血缘映射流水）。字段：`log_id`（关联 TaskLog）、`task_id`、`source_table`、`target_table`、`sync_mode`、`collect_mode`、`records_count`、`cost_seconds`、`watermark`、`status`。
 
-**`FtpFileRecord`** — 表 `ftp_file_record`。FTP 文件采集记录。字段：`task_id`、`remote_path`、`local_path`、`file_name`、`file_size`、`md5`、`file_type`、`is_parsed`、`parsed_rows`、`downloaded_at`。
+**`FtpFileRecord`** — 表 `ftp_file_record`。FTP 文件采集记录。字段：`task_id`、`remote_path`、`local_path`、`file_name`、`file_size`、`md5`、`remote_mtime`、`remote_size`、`file_type`、`is_parsed`、`parsed_rows`、`downloaded_at`。
+
+**`OssFileRecord`** — 表 `oss_file_record`。OSS 对象存储文件采集记录。字段：`task_id`、`object_key`、`local_path`、`file_name`、`file_size`、`md5`、`file_type`、`is_parsed`、`parsed_rows`、`downloaded_at`。
 
 ---
 
@@ -555,9 +584,19 @@ MongoDB 异步连接管理，基于 Motor（`AsyncIOMotorClient`）。全局单�
 
 **`DBSyncReq`** — 数据同步请求体，包含 80+ 字段，覆盖全部 11 种数据源类型的所有参数。`db_type` 是 Literal 类型（含 sqlite）。`config_json` 用于传递 SQL Server 实例名、Oracle SID 等扩展参数。
 
-**请求 Schema：** `TaskCreateReq`（50+ 字段）、`TaskUpdateReq`、`TaskIdReq`、`TaskStatusReq`、`TaskPageQueryReq`
+**请求 Schema：** `TaskCreateReq`（50+ 字段，含 `clean_policy`/`clean_keep_days`/`clean_keep_count`/`clean_cron` 清理配置）、`TaskUpdateReq`、`TaskIdReq`、`TaskStatusReq`、`TaskPageQueryReq`、`TaskCleanReq`
 
-**响应 Schema：** `TaskOut`（含 `run_status` 动态字段）、`TaskPageOut`、`DashboardOut`、`MonitorTrendReq`
+**响应 Schema：** `TaskOut`（含 `run_status` 动态字段和清理策略字段）、`TaskPageOut`、`DashboardOut`、`MonitorTrendReq`、`RecordQueryReq`
+
+**`TaskCleanReq`** — 手动清理请求体：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `task_id` | String(32) | 任务 ID |
+| `action` | Literal | `truncate`=清空表 / `drop`=删表 / `by_days`=按天保留 / `by_count`=按条数保留 |
+| `keep_days` | int | `by_days` 模式专用：保留最近 N 天 |
+| `keep_count` | int | `by_count` 模式专用：保留最新 N 条 |
+| `clean_files` | bool=True | 是否同时清理文件记录和本地缓存文件 |
 
 ---
 
@@ -609,27 +648,35 @@ api_router.include_router(explorer_router)      # /explorer
 
 #### 3.7.3 `app/api/v1/tsync.py`
 
-**同步任务管理** (`/tsync`)，14 个接口：
+**同步任务管理** (`/tsync`)，22 个接口：
 
 | 接口 | 功能 | 关键逻辑 |
 |------|------|----------|
 | `POST /database` | 直连同库（不走任务系统） | 同步调用 sync_database_architecture_and_data |
-| `POST /list` | 任务列表 | 含 run_status 动态判定（查 Redis 锁 + 最新 TaskLog） |
-| `POST /add` | 新增任务 | 翻译 Cron 表达式 → 刷新调度器 |
+| `POST /list` | 任务列表 | 含 run_status 动态判定（查 Redis 锁 + 最新 TaskLog + Manager 状态） |
+| `POST /add` | 新增任务 | 翻译 Cron 表达式 + 校验 clean_cron → 刷新调度器 |
 | `POST /update` | 修改任务 | 同 add |
-| `POST /delete` | 删除任务 | Kafka 任务先停 Consumer 再删 |
-| `POST /change_status` | 启停切换 | Kafka 停用时强杀 Consumer |
+| `POST /delete` | 删除任务 | Kafka/MQTT/RabbitMQ 任务先停 Consumer 再删 |
+| `POST /change_status` | 启停切换 | Kafka/MQTT/RabbitMQ 停用时强杀 Consumer |
 | `POST /run` | 手动执行 | Redis 防抖 → 清理僵尸日志 → 创建 pending 占坑 → ARQ 入队 |
 | `POST /pause` | 暂停 | 写 Redis `task_control:{id}` = paused |
 | `POST /cancel` | 取消 | 写 Redis = cancelled |
 | `POST /resume` | 恢复 | 打捞 Redis 水位线 → 回写数据库 → ARQ 自动入队 |
-| `POST /clean` | 解锁卡死 | 删 Redis 锁 + 控制信号 + 僵尸日志 |
+| `POST /clean` | 强制解锁卡死任务 | 删 Redis 锁 + 控制信号 + 僵尸日志 |
 | `POST /detail` | 任务详情 | — |
 | `POST /dashboard` | 仪表盘统计 | 总数/启用数/今日记录/成功率 |
 | `POST /kafka/start` | 启动 Kafka Consumer | — |
 | `POST /kafka/stop` | 停止 Kafka Consumer | — |
 | `POST /kafka/status` | 查询 Kafka Consumer 状态 | — |
-| `POST /monitor/trend` | Kafka 消费监控时序 | 从 InfluxDB 查询 consumed + elapsed_ms |
+| `POST /mqtt/start` | 启动 MQTT 订阅 | — |
+| `POST /mqtt/stop` | 停止 MQTT 订阅 | — |
+| `POST /mqtt/status` | 查询 MQTT 订阅状态 | — |
+| `POST /rabbitmq/start` | 启动 RabbitMQ 消费 | — |
+| `POST /rabbitmq/stop` | 停止 RabbitMQ 消费 | — |
+| `POST /rabbitmq/status` | 查询 RabbitMQ 消费状态 | — |
+| `POST /monitor/trend` | Kafka/MQTT/RabbitMQ 消费监控时序 | 从 InfluxDB 查询 consumed + elapsed_ms |
+| `POST /clean/data` | **手动清理采集数据** | truncate/drop/by_days/by_count + 文件记录 + 本地文件 |
+| `POST /record/list` | 文件同步记录查询（OSS/FTP） | 自动识别任务类型查询对应表 |
 
 ---
 
@@ -776,7 +823,9 @@ api_router.include_router(explorer_router)      # /explorer
 **APScheduler 定时调度服务。**
 - `AsyncIOScheduler` 实例（时区：`Asia/Shanghai`）
 - `refresh_scheduler_jobs()`：读取 `sys_collect_task` 中所有 `status=1` 且 `schedule_cron` 不为空的任务，解析 Cron 表达式，注册到调度器
-- `trigger_task_to_arq(task_id)`：时间一到，将 task_id 推入 ARQ 队列
+- `trigger_task_to_arq(task_id)`：时间一到，将 task_id 推入 ARQ 队列（触发数据同步）
+- `trigger_clean_job(task_id)`：时间一到，将 task_id 推入 ARQ 队列（触发数据清理）
+- 清理调度独立于采集调度：当 `clean_policy` 不为 `none` 且 `clean_cron` 有值时，额外注册清理 job（`clean_job_{task_id}`）
 
 ---
 
@@ -805,7 +854,76 @@ api_router.include_router(explorer_router)      # /explorer
 
 ---
 
-#### 3.8.13 `app/services/dialects/` — 方言处理器
+#### 3.8.13 `app/services/clean_service.py` — 采集数据清理服务
+
+**`CleanService`** — 支持手动和定时自动清理采集数据。操作范围：采集库数据表 + FtpFileRecord/OssFileRecord 记录 + 本地缓存文件。
+
+**核心方法：**
+
+| 方法 | 功能 |
+|------|------|
+| `truncate_table(table_name)` | TRUNCATE 清空表数据，保留表结构 |
+| `drop_table(table_name)` | DROP TABLE 删除整张表 |
+| `delete_by_days(table_name, keep_days)` | 按时间保留：删除 `collected_at < now - keep_days` 的数据 |
+| `delete_by_count(table_name, keep_count)` | 按条数保留：使用 `ROW_NUMBER()` 窗口函数精确保留最新 N 条 |
+| `clean_task_data(task_id, table_name, action, ...)` | 任务级一键清理（表+文件记录+本地文件） |
+
+**安全措施：**
+- 表名白名单校验 `_validate_table_name()` — 正则 `^[\w一-鿿]+$`，拦截 SQL 注入
+- `keep_days`/`keep_count` 非负整数校验
+- `delete_by_count` 使用 `ROW_NUMBER() OVER (ORDER BY collected_at DESC, id DESC)` 窗口函数避免字符串比较时序错误和同时间戳误伤
+
+**清理模式对照：**
+
+| 模式 | 手动 API | 定时 Cron | 说明 |
+|------|---------|----------|------|
+| `truncate` | ✅ | ❌ | 清空数据保留结构 |
+| `drop` | ✅ | ❌ | 彻底删除表 |
+| `by_days` | ✅ | ✅ | 保留最近 N 天 |
+| `by_count` | ✅ | ✅ | 保留最新 N 条 |
+
+**`clean_files` 参数说明：**
+- `True`（默认）：同时清理 `ftp_file_record`/`oss_file_record` 数据库记录 + `ftp_files/`、`data/oss_files/` 本地目录
+- `False`：仅清理采集表数据，不动文件记录和本地文件
+
+**全局单例：** `clean_service = CleanService()`
+
+---
+
+#### 3.8.14 `app/services/oss_sync_engine.py` — OSS 对象存储采集引擎
+
+基于 `boto3`（S3 兼容），支持阿里云 OSS / AWS S3 / MinIO 等兼容存储。
+- 单文件模式：指定 `oss_object_key` 下载单个对象
+- 批量模式：指定 `oss_prefix` 列举前缀下所有对象，逐个下载
+- MD5 去重 + `OssFileRecord` 记录
+- 结构化文件解析（CSV/JSON/YAML/Excel/XML）→ PG
+- `collected_at` 时间戳用于数据生命周期管理
+
+---
+
+#### 3.8.15 `app/services/mqtt_sync_engine.py` — MQTT 常驻订阅引擎
+
+基于 `aiomqtt`，常驻订阅指定 Topic（支持通配符 `+` 和 `#`）。
+- 支持 QoS 0/1/2 和 TLS 加密连接
+- `clean_session=False` 保证断线重连不丢消息
+- 内容幂等：topic + payload 的 MD5 作为主键
+- 自动重连 + 指数退避（5s → 60s 上限）
+- 异常断连前抢救写入攒批缓冲
+- 消费速率写入 InfluxDB（`mqtt_monitor` measurement）
+
+---
+
+#### 3.8.16 `app/services/rabbitmq_sync_engine.py` — RabbitMQ 常驻消费引擎
+
+基于 `aio-pika`，消费指定队列（支持交换机绑定）。
+- 手动 ACK：写 PG 成功后批量 ACK，确保零丢失
+- 单条消息失败 NACK 重新入队
+- 幂等：`message_id`（或自动生成 UUID）作为主键
+- 消费速率/队列深度写入 InfluxDB（`rabbitmq_monitor` measurement）
+
+---
+
+#### 3.8.17 `app/services/dialects/` — 方言处理器
 
 6 个方言处理器，Strategy 模式，通过 `get_dialect_handler(db_type)` 路由：
 
@@ -862,7 +980,8 @@ api_router.include_router(explorer_router)      # /explorer
 app/main.py (入口)
 ├── 启动 ARQ Worker 子进程
 │   └── app/worker.py
-│       ├── EngineFactory → 7 种引擎
+│       ├── run_sync_job: EngineFactory → 12 种引擎
+│       ├── run_clean_job: CleanService → 清理采集表+文件记录+本地文件
 │       ├── CRUD 层 → Models → DB
 │       └── task_control (Redis 同步客户端)
 │
@@ -873,14 +992,16 @@ app/main.py (入口)
 │   ├── app/core/mongo.py (Motor)
 │   ├── app/core/arq_pool.py (ARQ 池)
 │   ├── app/core/influx_client.py (InfluxDB)
-│   ├── app/services/scheduler_service.py (APScheduler)
-│   └── app/services/kafka_manager.py (自动拉起 Kafka)
+│   ├── app/services/scheduler_service.py (APScheduler: 采集调度 + 清理调度)
+│   ├── app/services/kafka_manager.py (自动拉起 Kafka)
+│   ├── app/services/mqtt_manager.py (自动拉起 MQTT)
+│   └── app/services/rabbitmq_manager.py (自动拉起 RabbitMQ)
 │
 ├── create_app() → FastAPI
 │   ├── CORS 中间件
 │   └── app/api/v1/ (6 个子路由)
 │       ├── /datasource → CRUDDataSource
-│       ├── /tsync → CRUDCollectTask + ARQ Pool + KafkaManager
+│       ├── /tsync → CRUDCollectTask + ARQ Pool + KafkaManager + MqttManager + RabbitMQManager + CleanService
 │       ├── /tasklog → CRUDTaskLog
 │       ├── /execlog → CRUDExecLog
 │       ├── /monitor → InfluxDB 查询
@@ -888,6 +1009,8 @@ app/main.py (入口)
 │
 └── 关闭阶段
     ├── kafka_manager.stop_all()
+    ├── mqtt_manager.stop_all()
+    ├── rabbitmq_manager.stop_all()
     ├── scheduler.shutdown()
     ├── close_arq_pool() / close_redis()
     ├── close_mongo() / close_influx()
@@ -956,7 +1079,64 @@ app/main.py (入口)
    → kafka_manager.stop_all() 遍历所有 Consumer 停止
 ```
 
-### 5.3 应用启动完整流程
+### 5.3 数据清理完整流程
+
+#### 5.3.1 手动清理
+
+```
+1. 前端 POST /api/v1/tsync/clean/data  {
+     "task_id": "xxx",
+     "action": "truncate",      // 或 drop / by_days / by_count
+     "keep_days": 7,           // by_days 模式
+     "keep_count": 1000,       // by_count 模式
+     "clean_files": true       // 是否联带清理文件
+   }
+   ↓
+2. tsync.py: 查任务 → 根据 DataSource.type 推导 table_name 前缀
+   ├─ task.topic_or_table 有值 → 精确表名
+   └─ 无值 → prefix_map 映射 (ftp→ftp_, kafka→kafka_, ...)
+   ↓
+3. clean_service.clean_task_data(task_id, table_name, action, ...)
+   ↓
+4. _resolve_tables_to_clean(): 自动前缀匹配
+   ├─ 精确表名 → [table_name]
+   └─ 前缀模式 (如 "ftp_") → 扫描采集库所有匹配表
+   ↓
+5. 逐表执行清理操作:
+   ├─ truncate → TRUNCATE TABLE RESTART IDENTITY
+   ├─ drop → DROP TABLE IF EXISTS
+   ├─ by_days → DELETE WHERE collected_at < cutoff
+   └─ by_count → DELETE WHERE id NOT IN (ROW_NUMBER TOP N)
+   ↓
+6. clean_files=true 时联动清理:
+   ├─ 删 ftp_file_record / oss_file_record 记录
+   └─ 删 ftp_files/{task_id}/ 和 data/oss_files/{task_id}/ 本地目录
+   ↓
+7. 返回清理结果 {tables_cleaned, file_records_deleted, local_files_deleted}
+```
+
+#### 5.3.2 定时自动清理
+
+```
+1. 任务配置:
+   ├─ clean_policy = "by_days" (或 "by_count")
+   ├─ clean_keep_days = 30 (或 clean_keep_count = 10000)
+   └─ clean_cron = "0 3 * * *" (每天凌晨 3 点)
+   ↓
+2. refresh_scheduler_jobs(): 注册清理 job (clean_job_{task_id})
+   ↓
+3. Cron 到点 → trigger_clean_job(task_id)
+   → ARQ enqueue_job('run_clean_job', task_id)
+   ↓
+4. Worker.run_clean_job():
+   → 读 task.clean_policy / clean_keep_days / clean_keep_count
+   → 推导表名前缀
+   → clean_service.clean_task_data() (clean_files=True)
+   ↓
+5. 日志记录: "定时清理完成 [{task_id}]: {...}"
+```
+
+### 5.5 应用启动完整流程
 
 ```
 1. python -m app.main
@@ -997,6 +1177,9 @@ app/main.py (入口)
 | `snmp` | pysnmp 7.x | PG + InfluxDB | SnmpSyncEngine | — |
 | `socket` | socket (内置) | PG + InfluxDB | SocketSyncEngine | — |
 | `kafka` | aiokafka | PG + InfluxDB | KafkaSyncEngine | — |
+| `mqtt` | aiomqtt | PG + InfluxDB | MqttSyncEngine | — |
+| `rabbitmq` | aio-pika | PG + InfluxDB | RabbitMQSyncEngine | — |
+| `oss` | boto3 | PG（解析）/ 本地（下载） | OssSyncEngine | — |
 
 ---
 
