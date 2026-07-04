@@ -292,7 +292,7 @@ async def resume_task(req: TaskIdReq, db: Session = Depends(get_db)):
 # endregion
 
 
-@router.post("/clean", summary="强制重置卡死任务(解锁+清理僵尸日志)", response_model=BaseResponse)
+@router.post("/unlock", summary="强制重置卡死任务(解锁+清理僵尸日志)", response_model=BaseResponse)
 async def clean_task_zombie_state(req: TaskIdReq, db: Session = Depends(get_db)):
     # 清除 Redis 分布式锁和控制信号
     lock_key = f"sync_task_lock:{req.task_id}"
