@@ -245,6 +245,7 @@
 `POST /tsync/add`
 
 ```json
+// 基础示例（不带清理）
 {
   "task_name": "每日同步用户表",
   "source_id": "550e8400e29b41d4a716446655440000",
@@ -256,6 +257,20 @@
   "schedule_value": "02:30",
   "status": 1,
   "remark": "每天凌晨2点增量同步"
+}
+
+// 带自动清理（保留 30 天，每天凌晨 3 点清理）
+{
+  "task_name": "传感器日志采集",
+  "source_id": "550e8400e29b41d4a716446655440000",
+  "sync_mode": "overwrite",
+  "collect_mode": "full",
+  "schedule_type": "interval_min",
+  "schedule_value": "30",
+  "status": 1,
+  "clean_policy": "by_days",
+  "clean_keep_days": 30,
+  "clean_cron": "0 3 * * *"
 }
 ```
 
@@ -287,10 +302,10 @@
 | target_username | string | ❌ | 目标库账号（仅 `target_type=mongodb` 时生效） |
 | target_password | string | ❌ | 目标库密码（仅 `target_type=mongodb` 时生效） |
 | target_db_name | string | ❌ | 目标库名（仅 `target_type=mongodb` 时生效） |
-| clean_policy | string | ❌ | 清理策略：`none`（默认）/ `by_days` / `by_count`。⚠️ 分支功能，详见[DLM](#15-数据生命周期管理dlm) |
+| clean_policy | string | ❌ | 清理策略：`none`（默认）/ `by_days` / `by_count`。详见[第 15 节 DLM](#15-数据生命周期管理dlm) |
 | clean_keep_days | int | ❌ | `by_days` 模式：保留最近 N 天数据 |
 | clean_keep_count | int | ❌ | `by_count` 模式：保留最新 N 条数据 |
-| clean_cron | string | ❌ | 自动清理 Cron 表达式，如 `"0 3 * * *"` |
+| clean_cron | string | ❌ | 自动清理 Cron 表达式（标准 5 字段），如 `"0 3 * * *"`。格式非法会直接拦截 |
 
 #### 采集模式详解 (`collect_mode`)
 
@@ -675,7 +690,7 @@ const timer = setInterval(async () => {
 
 ### 10. 强制重置卡死任务
 
-`POST /tsync/clean`
+`POST /tsync/unlock`
 
 ```json
 {"task_id": "550e8400e29b41d4a716446655440000"}
@@ -689,7 +704,7 @@ const timer = setInterval(async () => {
 
 **使用场景：** 系统崩溃重启后，任务卡死在 `running`/`pending` 状态，前端按钮一直是 `[暂停]` 无法操作。
 
-**`/clean` 执行动作：**
+**`/unlock` 执行动作：**
 
 ```
 1. 删除 Redis 分布式锁 sync_task_lock:{task_id}
@@ -697,7 +712,7 @@ const timer = setInterval(async () => {
 3. 删除数据库中该任务所有 pending/running 状态的日志
 ```
 
-> 建议在前端任务列表的操作列中加一个 **【解锁】** 按钮，仅在 `run_status` 异常卡死时显示。
+> 可以在任务列表的操作列中加一个 【解锁】 按钮，仅在 `run_status` 异常卡死时显示。
 
 **系统也具备自动清理能力：** 每次重启时，会自动将所有 `pending`/`running` 日志标记为 `failed`，避免残留僵尸状态。
 
@@ -916,43 +931,75 @@ const timer = setInterval(async () => {
 
 ### 15. 数据生命周期管理（DLM）
 
-> ⚠️ **分支状态：** 此功能目前在 `feature/clean` 分支，尚未合并 `master`。数据库需执行 `ALTER TABLE sys_collect_task ADD COLUMN ...` 后方可使用（SQL 见本章末尾）。
-
-平台支持两种数据清理模式：**手动清理**（大扫除）和**定时自动清理**（扫地机器人）。清理操作覆盖三个层面：采集数据表、元数据日志（`ftp_file_record` / `oss_file_record`）、本地物理文件。
+平台支持两种数据清理模式：**手动清理**（即时执行）和**定时自动清理**（Cron 驱动）。清理操作覆盖三个层面：采集数据表、元数据日志（`ftp_file_record` / `oss_file_record`）、本地物理文件。
 
 ---
 
-#### 15.1 手动清理（大扫除模式）
+#### 15.1 清理模式速览
 
-`POST /tsync/clean`
+| 模式 | action / clean_policy | 手动 API | 定时 Cron | 效果 |
+|------|----------------------|---------|----------|------|
+| 清空表 | `truncate` | ✅ | ❌ | TRUNCATE 表数据，保留表结构 |
+| 删表 | `drop` | ✅ | ❌ | DROP TABLE 整张表 |
+| 按天保留 | `by_days` | ✅ | ✅ | 只保留最近 N 天，删除更早的数据 |
+| 按条数保留 | `by_count` | ✅ | ✅ | 只保留最新 N 条，删除其余 |
+
+> `truncate` / `drop` 是破坏性操作，**只能手动调用**，不可配置定时执行。
+
+---
+
+#### 15.2 手动清理 — `POST /tsync/clean`
 
 用户在前端点击"清理数据"按钮，选择清理方式，后台即时执行。
 
-```json
-// TRUNCATE — 清空表数据，保留表结构
-{
-  "task_id": "550e8400e29b41d4a716446655440000",
-  "action": "truncate",
-  "clean_files": true
-}
+**请求体：**
 
-// DROP — 彻底删除整张表
-{
-  "task_id": "550e8400e29b41d4a716446655440000",
-  "action": "drop",
-  "clean_files": true
-}
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| task_id | string(32) | ✅ | — | 任务 UUID |
+| action | string | ✅ | — | `truncate` / `drop` / `by_days` / `by_count` |
+| keep_days | int | by_days 必填 | — | 保留最近 N 天的数据 |
+| keep_count | int | by_count 必填 | — | 保留最新 N 条数据 |
+| clean_files | bool | ❌ | `true` | 是否**同时**清理文件记录（`ftp_file_record`/`oss_file_record`）和本地缓存文件 |
+
+**`table_name` 自动推导：**
+
+请求体不需要传 `table_name`，后端自动根据任务配置推导：
+
+```
+if task.topic_or_table 有值:
+    → 精确表名（如 "my_collected_data"）
+else:
+    根据数据源类型查映射表：
+    ftp/ftps/sftp → "ftp_"
+    kafka         → "kafka_"
+    mqtt          → "mqtt_"
+    rabbitmq      → "mq_"
+    api           → "api_"
+    oss           → "oss_"
+    snmp          → "snmp_"
+    socket        → "socket_"
+    其他          → "task_{task_id}"
 ```
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| task_id | string | ✅ | 任务 UUID（32位） |
-| action | string | ✅ | `truncate`=清空数据保留结构 / `drop`=删除整张表 |
-| clean_files | bool | ❌ | 是否同时清理本地下载缓存文件，默认 `true` |
+若推导结果是前缀（如 `"ftp_"`），会自动扫描采集库中所有以该前缀开头的表，逐一清理，防止遗漏动态生成的采集表。
 
-响应：
+---
+
+**示例 1：truncate — 清空表数据，保留结构**
+
+```bash
+curl -X POST http://127.0.0.1:8028/api/v1/tsync/clean \
+  -H "Content-Type: application/json" \
+  -d '{
+    "task_id": "550e8400e29b41d4a716446655440000",
+    "action": "truncate",
+    "clean_files": false
+  }'
+```
 
 ```json
+// 响应
 {
   "code": 1,
   "msg": "清理完成",
@@ -960,127 +1007,223 @@ const timer = setInterval(async () => {
     "tables_cleaned": [
       {"status": "success", "action": "truncate", "table": "ftp_batch_data"}
     ],
-    "file_records_deleted": 156,
-    "local_files_deleted": 52,
-    "task_id": "550e8400e29b41d4a716446655440000",
-    "cleaned_at": "2026-06-22T15:30:00"
+    "task_id": "550e8400...",
+    "cleaned_at": "2026-07-04T15:30:00"
   }
 }
 ```
 
-**三层清理联动：**
+> `clean_files: false` → 只清表，不删文件记录和本地文件。响应中无 `file_records_deleted` / `local_files_deleted`。
 
+---
+
+**示例 2：by_days — 保留最近 7 天**
+
+```bash
+curl -X POST http://127.0.0.1:8028/api/v1/tsync/clean \
+  -H "Content-Type: application/json" \
+  -d '{
+    "task_id": "550e8400e29b41d4a716446655440000",
+    "action": "by_days",
+    "keep_days": 7,
+    "clean_files": true
+  }'
 ```
-POST /tsync/clean
-  ├─ 1. 解析目标表 → TRUNCATE 或 DROP
-  │     └─ 动态表名场景：自动扫描采集库 ftp_*/oss_* 前缀，防止遗漏
-  ├─ 2. 清理 ftp_file_record + oss_file_record 元数据日志
-  └─ 3. 删除 ftp_files/{task_id}/ 和 data/oss_files/{task_id}/ 本地缓存
+
+```json
+{
+  "code": 1,
+  "msg": "清理完成",
+  "data": {
+    "tables_cleaned": [
+      {"status": "success", "action": "delete_by_days", "table": "kafka_sensor", "deleted": 8234, "keep_days": 7, "cutoff": "2026-06-27T15:30:00"}
+    ],
+    "file_records_deleted": 0,
+    "local_files_deleted": 0,
+    "task_id": "550e8400...",
+    "cleaned_at": "2026-07-04T15:30:00"
+  }
+}
 ```
 
 ---
 
-#### 15.2 定时自动清理（扫地机器人模式）
+**示例 3：by_count — 只保留最新 1000 条**
 
-用户在创建/编辑任务时勾选"开启数据生命周期管理"，配置保留策略和清理时间。后台 `APScheduler` + `ARQ Worker` 自动执行，无需人工干预。
-
-**任务创建时配置清理策略：**
+```bash
+curl -X POST http://127.0.0.1:8028/api/v1/tsync/clean \
+  -H "Content-Type: application/json" \
+  -d '{
+    "task_id": "550e8400e29b41d4a716446655440000",
+    "action": "by_count",
+    "keep_count": 1000,
+    "clean_files": true
+  }'
+```
 
 ```json
-POST /tsync/add
 {
-  "task_name": "每日传感器日志",
-  "...": "...",
-  "clean_policy": "by_days",
-  "clean_keep_days": 30,
-  "clean_cron": "0 3 * * *"
+  "code": 1,
+  "data": {
+    "tables_cleaned": [
+      {"status": "success", "action": "delete_by_count", "table": "mq_queue_data", "deleted": 4521, "keep_count": 1000}
+    ],
+    "file_records_deleted": 12,
+    "local_files_deleted": 8,
+    "task_id": "550e8400...",
+    "cleaned_at": "2026-07-04T15:30:00"
+  }
 }
 ```
 
-**清理策略字段（新增）：**
+---
 
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| clean_policy | string | ❌ | `"none"` | 清理策略：`none`=不清理 / `by_days`=按天保留 / `by_count`=按条数保留 |
-| clean_keep_days | int | ❌ | — | `by_days` 模式：保留最近 N 天的数据 |
-| clean_keep_count | int | ❌ | — | `by_count` 模式：保留最新 N 条数据 |
-| clean_cron | string | ❌ | — | 自动清理的 Cron 表达式（如 `"0 3 * * *"` 每天凌晨 3 点） |
+**示例 4：drop — 彻底删表**
 
-> **注意：** `clean_cron` 会在 API 层做格式合法性校验，非法表达式（如 `* * * * * *`）创建时直接拦截。
+```bash
+curl -X POST http://127.0.0.1:8028/api/v1/tsync/clean \
+  -H "Content-Type: application/json" \
+  -d '{
+    "task_id": "550e8400e29b41d4a716446655440000",
+    "action": "drop",
+    "clean_files": true
+  }'
+```
 
-**两种保留策略对比：**
+```json
+{"tables_cleaned": [{"status": "success", "action": "drop", "table": "ftp_old_data"}]}
+```
 
-| 策略 | clean_policy | 依赖字段 | 工作原理 |
-|------|-------------|----------|----------|
-| 按天保留 | `"by_days"` | `clean_keep_days` + `clean_cron` | `DELETE WHERE collected_at < now() - N天` |
-| 按条数保留 | `"by_count"` | `clean_keep_count` + `clean_cron` | 子查询找出第 N 条的 `collected_at` 边界，删除更早的数据 |
+---
+
+**示例 5：错误响应**
+
+```json
+// 缺少 keep_days
+{"code": 0, "msg": "by_days 模式必须指定 keep_days"}
+
+// 非法表名（SQL 注入防护）
+{"code": 0, "msg": "表名包含非法字符: bad; DROP TABLE users--"}
+
+// 表不存在（静默跳过）
+{"status": "skipped", "msg": "表 [no_such_table] 不存在"}
+
+// 总数不超标（by_count 时无需清理）
+{"status": "skipped", "msg": "未超过保留数量", "total": 500, "keep_count": 1000}
+```
+
+---
+
+**清理联动流程（`clean_files=true` 时）：**
+
+```
+POST /tsync/clean
+  ├─ 1. 根据 task_id 查 DataSource 推导 table_name 前缀
+  ├─ 2. _resolve_tables_to_clean(): 前缀匹配 → 扫描采集库所有匹配表
+  ├─ 3. 逐表执行:
+  │     ├─ truncate → TRUNCATE TABLE "xxx" RESTART IDENTITY
+  │     ├─ drop     → DROP TABLE IF EXISTS "xxx"
+  │     ├─ by_days  → DELETE FROM "xxx" WHERE collected_at < :cutoff
+  │     └─ by_count → DELETE FROM "xxx" WHERE id IN (
+  │                      SELECT id FROM (ROW_NUMBER() OVER (...) AS rn)
+  │                      WHERE rn > :keep_count)
+  └─ 4. clean_files=true 时:
+        ├─ 删 ftp_file_record + oss_file_record (WHERE task_id=xxx)
+        └─ 删 ftp_files/{task_id}/ + data/oss_files/{task_id}/ 目录
+```
+
+> `clean_files=false` 时跳过步骤 4，仅清理表数据。
+
+---
+
+#### 15.3 定时自动清理
+
+用户在创建/编辑任务时配置清理策略和 Cron，后台 `APScheduler` + `ARQ Worker` 到点自动执行。
+
+**任务创建/编辑时的新增字段：**
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| clean_policy | string | `"none"` | 清理策略：`none` / `by_days` / `by_count` |
+| clean_keep_days | int | — | `by_days` 模式：保留最近 N 天 |
+| clean_keep_count | int | — | `by_count` 模式：保留最新 N 条 |
+| clean_cron | string | — | 标准 5 字段 Cron 表达式（如 `"0 3 * * *"`） |
+
+> `clean_cron` 在 `POST /tsync/add` 和 `POST /tsync/update` 中都会校验格式合法性，非法表达式直接拦截并返回错误提示。
+
+**完整示例 — 创建带自动清理的任务：**
+
+```bash
+curl -X POST http://127.0.0.1:8028/api/v1/tsync/add \
+  -H "Content-Type: application/json" \
+  -d '{
+    "task_name": "每日传感器日志",
+    "source_id": "abc123...",
+    "schedule_type": "cron",
+    "schedule_cron": "0 */2 * * *",
+    "sync_mode": "overwrite",
+    "collect_mode": "full",
+    "status": 1,
+    "clean_policy": "by_days",
+    "clean_keep_days": 30,
+    "clean_cron": "0 3 * * *"
+  }'
+```
+
+> 这个任务：每 2 小时采集一次，每天凌晨 3 点自动清理 30 天前的数据。
+
+---
 
 **定时清理完整链路：**
 
 ```
-APScheduler(clean_cron 到点)
-  → trigger_clean_job(task_id)
-    → ARQ enqueue_job('run_clean_job', task_id)
-      → Worker.run_clean_job
-        → 读 clean_policy / keep_days / keep_count
-        → CleanService.clean_task_data()
-          ├─ DELETE FROM table WHERE collected_at < cutoff
-          ├─ 删 ftp_file_record / oss_file_record
-          └─ 删本地文件目录
-```
-
-**前端 UI 建议：**
-
-```
-任务创建/编辑表单底部新增「数据生命周期管理」区域：
-  ┌─────────────────────────────────────────┐
-  │ ☐ 开启数据生命周期管理                   │
-  │   保留策略: [按天保留 ▼]                 │
-  │   保留天数: [30]                         │
-  │   清理时间: [每天 03:00 ▼]               │
-  └─────────────────────────────────────────┘
-
-任务列表操作列新增「清理数据」按钮：
-  点击 → 弹出确认对话框 → 选择 truncate / drop → 执行
+refresh_scheduler_jobs()
+  ├─ 采集调度: schedule_cron → trigger_task_to_arq → run_sync_job
+  └─ 清理调度: clean_cron → trigger_clean_job → run_clean_job
+                                                      │
+APScheduler (clean_cron 到点)                          │
+  → trigger_clean_job(task_id)                         │
+    → ARQ enqueue_job('run_clean_job', task_id) ──────┘
+      → Worker.run_clean_job:
+          1. 查 task.clean_policy / keep_days / keep_count
+          2. 推导表名前缀 (同手动清理)
+          3. clean_service.clean_task_data(clean_files=True)
+             ├─ by_days:  DELETE WHERE collected_at < now - N天
+             ├─ by_count: DELETE WHERE id NOT IN (ROW_NUMBER TOP N)
+             ├─ 删 ftp_file_record + oss_file_record
+             └─ 删本地缓存目录
+          4. 写日志: "定时清理完成 [{task_id}]"
 ```
 
 ---
 
-#### 15.3 数据库变更 SQL
+#### 15.4 技术
+
+**`delete_by_count` 的实现：**
+
+使用 PostgreSQL `ROW_NUMBER()` 窗口函数精确定位要删除的行，避免字符串比较的时序问题：
 
 ```sql
--- 清理策略字段
-ALTER TABLE sys_collect_task
-    ADD COLUMN IF NOT EXISTS clean_policy      VARCHAR(20),
-    ADD COLUMN IF NOT EXISTS clean_keep_days   INTEGER,
-    ADD COLUMN IF NOT EXISTS clean_keep_count  INTEGER,
-    ADD COLUMN IF NOT EXISTS clean_cron        VARCHAR(50);
-
--- 已有采集表补 collected_at 列（DLM 按天/按条数删除必需）
-DO $$
-DECLARE r RECORD;
-BEGIN
-    FOR r IN
-        SELECT tablename FROM pg_tables
-        WHERE schemaname = 'public'
-          AND (tablename LIKE 'ftp_%' OR tablename LIKE 'oss_%'
-            OR tablename LIKE 'mq_%' OR tablename LIKE 'kafka_%'
-            OR tablename LIKE 'api_%' OR tablename LIKE 'socket_%'
-            OR tablename LIKE 'mqtt_%' OR tablename LIKE 'rabbitmq_%'
-            OR tablename LIKE 'snmp_%')
-    LOOP
-        IF NOT EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema='public' AND table_name=r.tablename
-              AND column_name='collected_at'
-        ) THEN
-            EXECUTE format('ALTER TABLE %I ADD COLUMN collected_at VARCHAR(30)', r.tablename);
-        END IF;
-    END LOOP;
-END $$;
+DELETE FROM "table_name"
+WHERE id IN (
+    SELECT id FROM (
+        SELECT id,
+               ROW_NUMBER() OVER (ORDER BY "collected_at" DESC, id DESC) AS rn
+        FROM "table_name"
+    ) _ranked
+    WHERE rn > :keep_count
+);
 ```
 
----
+**表名安全防护：**
+
+所有传入的表名经过白名单校验 `^[\w一-鿿]+$`（字母/数字/下划线/中文），非法字符直接抛 `ValueError`，防止 SQL 注入。
+
+**`collected_at` 列依赖：**
+
+`by_days` 和 `by_count` 依赖采集表中有 `collected_at` 列（ISO 格式字符串，引擎写入时自动添加）。FTP/OSS/Kafka/MQTT/RabbitMQ/API/Socket/SNMP 引擎均已内置此列。
+
+
 
 ## 三、任务执行日志 `/tasklog`
 
