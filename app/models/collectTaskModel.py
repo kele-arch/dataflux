@@ -33,7 +33,7 @@ class CollectTask(Base, BaseModelMixin):
 
     schedule_cron: Mapped[str | None] = mapped_column(String(50), nullable=True,
                                                       comment="定时任务表达式，为空则表示常驻流式任务")
-    status: Mapped[int] = mapped_column(Integer, default=1, comment="任务状态：0停用, 1启用")
+    status: Mapped[int] = mapped_column(Integer, default=1, comment="任务状态: 0停用, 1启用")
 
     sync_mode: Mapped[str] = mapped_column(String(20), default="overwrite", comment="冲突策略: insert, overwrite, skip")
     remark: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="备注")
@@ -41,7 +41,7 @@ class CollectTask(Base, BaseModelMixin):
     sync_tables: Mapped[list | None] = mapped_column(JSON, nullable=True, comment="指定同步表")
     table_mapping: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="表名映射: {'源表名':'目标表名'}")
 
-    # 采集模式：full(全量), inc_id(自增列), inc_time(时间戳), custom_sql(自定义SQL)
+    # 采集模式: full(全量), inc_id(自增列), inc_time(时间戳), custom_sql(自定义SQL)
     collect_mode: Mapped[str] = mapped_column(String(20), default="full")
 
     # 增量依赖的字段名 (如 "id" 或 "update_time")
@@ -61,6 +61,20 @@ class CollectTask(Base, BaseModelMixin):
     target_username: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="目标库账号")
     target_password: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="目标库密码")
     target_db_name: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="目标库名")
+
+    # 清理策略
+    clean_policy: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, comment="清理策略: none/by_days/by_count"
+    )
+    clean_keep_days: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, comment="按天保留: 保留最近N天数据"
+    )
+    clean_keep_count: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, comment="按条数保留: 保留最新N条"
+    )
+    clean_cron: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, comment="自动清理的Cron表达式"
+    )
 
     # FTP 采集配置
     ftp_url: Mapped[str | None] = mapped_column(String(500), nullable=True,

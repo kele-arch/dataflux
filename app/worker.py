@@ -272,8 +272,63 @@ arq_redis_settings = RedisSettings(
 
 
 # Arq 启动配置项
+async def run_clean_job(ctx, task_id: str):
+    """
+    定时清理后台任务: 从数据库读取清理策略后执行
+    """
+    from app.services.clean_service import clean_service
+    from app.models.dataSourceModel import DataSource
+
+    db = SessionLocal()
+    try:
+        task = crud_task.get_by_id(db, task_id)
+        if not task:
+            logger.error(f"清理任务 [{task_id}] 不存在")
+            return
+
+        if not task.clean_policy or task.clean_policy == "none":
+            logger.info(f"任务 [{task_id}] 未配置清理策略, 跳过")
+            return
+
+        # 根据数据源类型推导正确的表名前缀
+        if task.topic_or_table:
+            table_name = task.topic_or_table
+        else:
+            source = db.execute(
+                select(DataSource).where(DataSource.id == task.source_id)
+            ).scalar_one_or_none()
+            source_type = source.type.lower() if source else ""
+
+            prefix_map = {
+                "ftp": "ftp_", "ftps": "ftp_", "sftp": "ftp_",
+                "kafka": "kafka_",
+                "mqtt": "mqtt_",
+                "rabbitmq": "mq_",
+                "api": "api_",
+                "oss": "oss_",
+                "snmp": "snmp_",
+                "socket": "socket_",
+            }
+            table_name = prefix_map.get(source_type, f"task_{task_id}")
+
+        result = clean_service.clean_task_data(
+            task_id=task_id,
+            table_name=table_name,
+            action=task.clean_policy,
+            keep_days=task.clean_keep_days,
+            keep_count=task.clean_keep_count,
+            clean_files=True,
+        )
+        logger.info(f"定时清理完成 [{task_id}]: {result}")
+
+    except Exception as e:
+        logger.error(f"定时清理失败 [{task_id}]: {e}")
+    finally:
+        db.close()
+
+
 class WorkerSettings:
-    functions = [run_sync_job]
+    functions = [run_sync_job, run_clean_job]
     redis_settings = arq_redis_settings
     # 同步任务极度消耗数据库连接池,建议并发不要太大
     max_jobs = 3

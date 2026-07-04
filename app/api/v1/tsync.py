@@ -18,7 +18,7 @@ from app.models.collectTaskModel import CollectTask
 from app.models.dataSourceModel import DataSource
 from app.models.taskLogModel import TaskLog, FtpFileRecord, OssFileRecord
 from app.schemas.tsync import DBSyncReq, TaskIdReq, TaskUpdateReq, TaskCreateReq, TaskPageQueryReq, TaskPageOut, \
-    TaskOut, DashboardOut, TaskStatusReq, MonitorTrendReq, RecordQueryReq
+    TaskOut, DashboardOut, TaskStatusReq, MonitorTrendReq, RecordQueryReq, TaskCleanReq
 from app.schemas.response import BaseResponse
 from app.services.kafka_manager import kafka_manager, _build_kafka_req
 from app.services.mqtt_manager import mqtt_manager, _build_mqtt_req
@@ -62,13 +62,19 @@ def add_task(req: TaskCreateReq, db: Session = Depends(get_db)):
         # 直接赋值给原请求对象,对底层的 CRUD 零侵入
         req.schedule_cron = cron_str
 
+        # 如果配置了清理 Cron，格式合法性校验
+        if req.clean_cron and req.clean_cron.strip():
+            try:
+                generate_cron_expression("cron", req.clean_cron.strip())
+            except ValueError as e:
+                return BaseResponse(code=0, msg=f"清理Cron表达式格式非法: {e}")
+
         obj = crud_task.create(db, req)
         refresh_scheduler_jobs()
 
         return BaseResponse(data={"id": obj.id}, msg="任务创建成功")
 
     except ValueError as e:
-        # 捕获我们在翻译层抛出的不合法异常
         return BaseResponse(code=0, msg=str(e))
 
 
@@ -79,6 +85,13 @@ def update_task(req: TaskUpdateReq, db: Session = Depends(get_db)):
         if req.schedule_type is not None:
             cron_str = generate_cron_expression(req.schedule_type, req.schedule_value)
             req.schedule_cron = cron_str
+
+        # 如果配置了清理 Cron，格式合法性校验
+        if req.clean_cron and req.clean_cron.strip():
+            try:
+                generate_cron_expression("cron", req.clean_cron.strip())
+            except ValueError as e:
+                return BaseResponse(code=0, msg=f"清理Cron表达式格式非法: {e}")
 
         success = crud_task.update(db, req)
         if not success:
@@ -558,5 +571,57 @@ def get_sync_records(req: RecordQueryReq, db: Session = Depends(get_db)):
         "page_size": req.page_size,
         "items": items,
     }, msg="获取成功")
+
+# endregion
+
+
+# region ---- 数据清理 ----
+@router.post("/clean", summary="手动清理任务采集数据", response_model=BaseResponse)
+def clean_task(req: TaskCleanReq, db: Session = Depends(get_db)):
+    """
+    action: truncate=清空 drop=删表 by_days=按天保留 by_count=按条数保留
+    """
+    from app.services.clean_service import clean_service
+
+    task = crud_task.get_by_id(db, req.task_id)
+    if not task:
+        return BaseResponse(code=0, msg="任务不存在")
+
+    # 根据数据源类型推导正确的表名前缀, 对齐各引擎实际建表命名
+    if task.topic_or_table:
+        table_name = task.topic_or_table
+    else:
+        source = db.execute(
+            select(DataSource).where(DataSource.id == task.source_id)
+        ).scalar_one_or_none()
+        source_type = source.type.lower() if source else ""
+
+        prefix_map = {
+            "ftp": "ftp_", "ftps": "ftp_", "sftp": "ftp_",
+            "kafka": "kafka_",
+            "mqtt": "mqtt_",
+            "rabbitmq": "mq_",
+            "api": "api_",
+            "oss": "oss_",
+            "snmp": "snmp_",
+            "socket": "socket_",
+        }
+        table_name = prefix_map.get(source_type, f"task_{req.task_id}")
+
+    try:
+        result = clean_service.clean_task_data(
+            task_id=req.task_id,
+            table_name=table_name,
+            action=req.action,
+            keep_days=req.keep_days,
+            keep_count=req.keep_count,
+            clean_files=req.clean_files,
+        )
+        return BaseResponse(data=result, msg="清理完成")
+    except ValueError as e:
+        return BaseResponse(code=0, msg=str(e))
+    except Exception as e:
+        logger.error(f"清理失败 [{req.task_id}]: {e}")
+        return BaseResponse(code=0, msg=f"清理失败: {str(e)}")
 
 # endregion
