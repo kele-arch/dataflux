@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 120" width="500" height="120">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2563eb;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#7c3aed;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Icon: three connected nodes -->
+  <circle cx="35" cy="85" r="14" fill="#2563eb" opacity="0.9"/>
+  <circle cx="80" cy="35" r="14" fill="#6366f1" opacity="0.9"/>
+  <circle cx="80" cy="85" r="14" fill="#7c3aed" opacity="0.9"/>
+
+  <!-- Connection lines -->
+  <line x1="46" y1="78" x2="68" y2="44" stroke="#6366f1" stroke-width="3" stroke-linecap="round" opacity="0.6"/>
+  <line x1="49" y1="85" x2="66" y2="85" stroke="#a78bfa" stroke-width="3" stroke-linecap="round" opacity="0.6"/>
+  <line x1="65" y1="48" x2="72" y2="72" stroke="#7c3aed" stroke-width="3" stroke-linecap="round" opacity="0.4"/>
+
+  <!-- Data flow arrow -->
+  <line x1="63" y1="60" x2="100" y2="60" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round" opacity="0.5"/>
+  <polygon points="100,60 91,54 91,66" fill="#2563eb" opacity="0.5"/>
+
+  <!-- Text -->
+  <text x="120" y="80" font-family="system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="52" font-weight="700" fill="#1e293b" letter-spacing="-1">
+    Data<tspan fill="url(#grad)">flux</tspan>
+  </text>
+
+  <!-- Subtitle -->
+  <text x="124" y="105" font-family="system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="14" fill="#64748b" letter-spacing="3">
+    异构数据采集平台
+  </text>
+</svg>
