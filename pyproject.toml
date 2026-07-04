@@ -1,9 +1,40 @@
 [project]
 name = "dataflux"
 version = "1.0.0"
-description = "数据采集平台"
+description = "一站式异构数据采集平台 — 支持 12 种数据源的采集、同步、流式消费与生命周期管理"
 readme = "README.md"
 requires-python = ">=3.12, <3.14"
+authors = [
+    {name = "胡H"}
+]
+keywords = [
+    "data-collection",
+    "data-sync",
+    "etl",
+    "s3",
+    "kafka",
+    "mqtt",
+    "fastapi",
+    "postgresql",
+    "scheduler",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Framework :: FastAPI",
+    "Topic :: Database",
+    "Topic :: System :: Distributed Computing",
+]
+
+[project.urls]
+Homepage = "https://github.com/hh-macro/dataflux"
+Documentation = "https://github.com/hh-macro/dataflux/tree/master/docs"
+Repository = "https://github.com/hh-macro/dataflux"
+Issues = "https://github.com/hh-macro/dataflux/issues"
+
 dependencies = [
     "fastapi>=0.103.0",
     "uvicorn[standard]>=0.23.0", # ASGI 服务器
