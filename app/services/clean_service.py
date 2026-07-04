@@ -2,11 +2,11 @@
 # @Author: 胡H
 # @File: app/services/clean_service.py
 # @Created: 2026/6/22 11:11
-# @LastModified: 
+# @LastModified:
 # Copyright (c) 2026 by 胡H, All Rights Reserved.
 # @desc: 采集数据清理服务-- 支持手动清理和定时自动清理
 
-import os
+import re
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -17,6 +17,9 @@ from app.core import logger, project_rootpath
 from app.core.config import settings
 from app.db.session import collected_engine, SessionLocal
 from app.models.taskLogModel import FtpFileRecord, OssFileRecord
+
+# 表名安全校验: 只允许字母/数字/下划线/中文, 防止 SQL 注入
+_TBL_NAME_PATTERN = re.compile(r'^[\w一-鿿]+$')
 
 
 class CleanService:
@@ -30,7 +33,14 @@ class CleanService:
 
     #  工具方法
 
+    def _validate_table_name(self, table_name: str) -> str:
+        """表名白名单校验, 防止 SQL 注入"""
+        if not _TBL_NAME_PATTERN.fullmatch(table_name):
+            raise ValueError(f"表名包含非法字符: {table_name}")
+        return table_name
+
     def _table_exists(self, table_name: str) -> bool:
+        self._validate_table_name(table_name)
         inspector = inspect(collected_engine)
         return table_name in inspector.get_table_names()
 
@@ -41,7 +51,7 @@ class CleanService:
         则扫描采集库中所有匹配该前缀的表, 防止 DROP 遗漏动态生成的小表 
         """
         # 默认表名模式: 未指定 target_table 时自动生成
-        auto_patterns = ("ftp_", "oss_", "mq_", "kafka_", "api_", "task_")
+        auto_patterns = ("ftp_", "oss_", "mq_", "kafka_", "api_", "task_", "snmp_", "socket_", "mqtt_")
         is_auto = table_name.startswith(auto_patterns)
 
         if not is_auto:
@@ -95,6 +105,8 @@ class CleanService:
         清空表数据(TRUNCATE), 保留表结构
         速度比 DELETE 快, 不写行日志
         """
+        self._validate_table_name(table_name)
+
         if not self._table_exists(table_name):
             return {"status": "skipped", "msg": f"表 [{table_name}] 不存在"}
 
@@ -108,6 +120,8 @@ class CleanService:
         """
         删除表(DROP TABLE IF EXISTS)
         """
+        self._validate_table_name(table_name)
+
         with collected_engine.begin() as conn:
             conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}"'))
 
@@ -119,6 +133,12 @@ class CleanService:
         按时间保留: 删除 time_col < now() - keep_days 的数据
         time_col 默认是 collected_at(ISO字符串格式)
         """
+        self._validate_table_name(table_name)
+        self._validate_table_name(time_col)
+
+        if keep_days is None or keep_days < 0:
+            raise ValueError("keep_days 必须是非负整数")
+
         if not self._table_exists(table_name):
             return {"status": "skipped", "msg": f"表 [{table_name}] 不存在"}
 
@@ -141,8 +161,14 @@ class CleanService:
     def delete_by_count(self, table_name: str, keep_count: int, time_col: str = "collected_at") -> dict:
         """
         按条数保留: 只保留最新 keep_count 条, 删除其余
-        通过子查询找出第 keep_count 条的 time_col 边界, 删除更早的数据
+        使用 ROW_NUMBER() 窗口函数精确定位, 避免字符串比较的时序错误和同时间戳误伤
         """
+        self._validate_table_name(table_name)
+        self._validate_table_name(time_col)
+
+        if keep_count is None or keep_count < 0:
+            raise ValueError("keep_count 必须是非负整数")
+
         if not self._table_exists(table_name):
             return {"status": "skipped", "msg": f"表 [{table_name}] 不存在"}
 
@@ -159,14 +185,19 @@ class CleanService:
                 "table": table_name, "total": total, "keep_count": keep_count
             }
 
+        # 使用 ROW_NUMBER() 窗口函数定位要删除的行
+        # 即使多条记录 shared same collected_at, 也能精确保留 keep_count 条
         with collected_engine.begin() as conn:
             result = conn.execute(
                 text(f"""
                     DELETE FROM "{table_name}"
-                    WHERE "{time_col}" < (
-                        SELECT "{time_col}" FROM "{table_name}"
-                        ORDER BY "{time_col}" DESC
-                        LIMIT 1 OFFSET :keep_count
+                    WHERE id IN (
+                        SELECT id FROM (
+                            SELECT id,
+                                   ROW_NUMBER() OVER (ORDER BY "{time_col}" DESC, id DESC) AS rn
+                            FROM "{table_name}"
+                        ) _ranked
+                        WHERE rn > :keep_count
                     )
                 """),
                 {"keep_count": keep_count}
@@ -189,7 +220,7 @@ class CleanService:
             action: str,  # truncate / drop / by_days / by_count
             keep_days: int = None,
             keep_count: int = None,
-            clean_files: bool = True  # 是否同时清理本地文件
+            clean_files: bool = True  # 是否同时清理文件记录和本地文件
     ) -> dict:
         """
         任务级别一键清理
@@ -209,25 +240,24 @@ class CleanService:
             elif action == "drop":
                 result["tables_cleaned"].append(self.drop_table(tbl))
             elif action == "by_days":
-                if not keep_days:
+                if keep_days is None:
                     raise ValueError("by_days 模式必须指定 keep_days")
                 result["tables_cleaned"].append(self.delete_by_days(tbl, keep_days))
             elif action == "by_count":
-                if not keep_count:
+                if keep_count is None:
                     raise ValueError("by_count 模式必须指定 keep_count")
                 result["tables_cleaned"].append(self.delete_by_count(tbl, keep_count))
             else:
                 raise ValueError(f"不支持的清理操作: {action}")
 
-        # 清理 FTP/OSS 文件记录(联动)
-        db = SessionLocal()
-        try:
-            result["file_records_deleted"] = self._clean_file_records(db, task_id)
-        finally:
-            db.close()
-
-        # 清理本地文件(可选)
+        # 清理文件记录和本地文件(由 clean_files 统一控制)
         if clean_files:
+            db = SessionLocal()
+            try:
+                result["file_records_deleted"] = self._clean_file_records(db, task_id)
+            finally:
+                db.close()
+
             local_deleted = self._clean_local_files(task_id)
             result["local_files_deleted"] = local_deleted
 

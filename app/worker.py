@@ -277,6 +277,7 @@ async def run_clean_job(ctx, task_id: str):
     定时清理后台任务: 从数据库读取清理策略后执行
     """
     from app.services.clean_service import clean_service
+    from app.models.dataSourceModel import DataSource
 
     db = SessionLocal()
     try:
@@ -289,7 +290,26 @@ async def run_clean_job(ctx, task_id: str):
             logger.info(f"任务 [{task_id}] 未配置清理策略, 跳过")
             return
 
-        table_name = task.topic_or_table or f"task_{task_id}"
+        # 根据数据源类型推导正确的表名前缀
+        if task.topic_or_table:
+            table_name = task.topic_or_table
+        else:
+            source = db.execute(
+                select(DataSource).where(DataSource.id == task.source_id)
+            ).scalar_one_or_none()
+            source_type = source.type.lower() if source else ""
+
+            prefix_map = {
+                "ftp": "ftp_", "ftps": "ftp_", "sftp": "ftp_",
+                "kafka": "kafka_",
+                "mqtt": "mqtt_",
+                "rabbitmq": "mq_",
+                "api": "api_",
+                "oss": "oss_",
+                "snmp": "snmp_",
+                "socket": "socket_",
+            }
+            table_name = prefix_map.get(source_type, f"task_{task_id}")
 
         result = clean_service.clean_task_data(
             task_id=task_id,

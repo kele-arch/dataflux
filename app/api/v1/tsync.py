@@ -88,7 +88,10 @@ def update_task(req: TaskUpdateReq, db: Session = Depends(get_db)):
 
         # 如果配置了清理 Cron，格式合法性校验
         if req.clean_cron and req.clean_cron.strip():
-            generate_cron_expression("cron", req.clean_cron.strip())
+            try:
+                generate_cron_expression("cron", req.clean_cron.strip())
+            except ValueError as e:
+                return BaseResponse(code=0, msg=f"清理Cron表达式格式非法: {e}")
 
         success = crud_task.update(db, req)
         if not success:
@@ -584,7 +587,26 @@ def clean_task(req: TaskCleanReq, db: Session = Depends(get_db)):
     if not task:
         return BaseResponse(code=0, msg="任务不存在")
 
-    table_name = task.topic_or_table or f"task_{req.task_id}"
+    # 根据数据源类型推导正确的表名前缀, 对齐各引擎实际建表命名
+    if task.topic_or_table:
+        table_name = task.topic_or_table
+    else:
+        source = db.execute(
+            select(DataSource).where(DataSource.id == task.source_id)
+        ).scalar_one_or_none()
+        source_type = source.type.lower() if source else ""
+
+        prefix_map = {
+            "ftp": "ftp_", "ftps": "ftp_", "sftp": "ftp_",
+            "kafka": "kafka_",
+            "mqtt": "mqtt_",
+            "rabbitmq": "mq_",
+            "api": "api_",
+            "oss": "oss_",
+            "snmp": "snmp_",
+            "socket": "socket_",
+        }
+        table_name = prefix_map.get(source_type, f"task_{req.task_id}")
 
     try:
         result = clean_service.clean_task_data(
