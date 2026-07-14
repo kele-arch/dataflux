@@ -21,8 +21,8 @@ class DataSource(Base, BaseModelMixin):
     # SA 2.0 语法：使用 Mapped[类型] 和 mapped_column
     name: Mapped[str] = mapped_column(String(100), nullable=False, comment="数据源名称，如：产线A_MySQL")
     type: Mapped[str] = mapped_column(String(50), nullable=False, comment="数据源类型：mysql, mqtt, kafka, redis")
-    host: Mapped[str] = mapped_column(String(255), nullable=False, comment="主机地址")
-    port: Mapped[int] = mapped_column(Integer, nullable=False, comment="端口")
+    host: Mapped[str] = mapped_column(String(255), nullable=False, default="", comment="主机地址(API/Kafka等可填空)")
+    port: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="端口(API/Kafka等可填0)")
 
     db_name: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="数据库名称")
 

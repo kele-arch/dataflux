@@ -33,11 +33,11 @@ class DBSyncReq(BaseDecryptReq):
         "mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket", "kafka", "sqlite", "mqtt", "rabbitmq", "oss"] = Field(
         ...,
         description="数据库类型")
-    host: str = Field(..., description="主机地址 IP")
-    port: int = Field(..., description="端口")
-    username: str = Field(..., description="用户名")
-    password: str = Field(..., description="密码")
-    db_name: str = Field(..., description="要同步的数据库名")
+    host: str = Field(default="", description="主机地址 IP（API/Kafka 等可留空）")
+    port: int = Field(default=0, description="端口（API/Kafka 等可填 0）")
+    username: str = Field(default="", description="用户名（API/Kafka 等可留空）")
+    password: str = Field(default="", description="密码（API/Kafka 等可留空）")
+    db_name: str = Field(default="", description="要同步的数据库名（API/Kafka 等可留空）")
 
     # 选填, 有默认值
     charset: Optional[str] = Field("utf8mb4", description="字符集")

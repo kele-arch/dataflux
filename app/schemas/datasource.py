@@ -16,9 +16,9 @@ class DataSourceBase(BaseDecryptReq):
     type: Literal[
         "mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket", "kafka", "sqlite", "mqtt", "rabbitmq", "oss"] = Field(
         ..., description="数据库类型")
-    host: str = Field(..., description="主机地址")
-    port: int = Field(..., description="端口")
-    db_name: str = Field(..., description="数据库名")
+    host: str = Field(default="", description="主机地址（API/Kafka 等可留空）")
+    port: int = Field(default=0, description="端口（API/Kafka 等可填 0）")
+    db_name: Optional[str] = Field(default=None, description="数据库名（API/Kafka 等可留空）")
     username: Optional[str] = Field(default=None, description="用户名")
     password: Optional[str] = Field(default=None, description="密码")
     config_json: Optional[dict] = Field(default=None, description="高级配置(如 charset)")
