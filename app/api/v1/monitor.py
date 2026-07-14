@@ -6,6 +6,8 @@
 # Copyright (c) 2026 by 胡H, All Rights Reserved.
 # @desc: InfluxDB 监控查询接口
 
+from datetime import datetime, timezone, timedelta
+
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
@@ -13,6 +15,33 @@ from app.core.influx_client import get_influx_client
 from app.schemas.response import BaseResponse
 
 router = APIRouter(prefix="/monitor", tags=["监控查询"])
+
+BJ_TZ = timezone(timedelta(hours=8))
+
+
+def _utc_to_bj(utc_val):
+    """UTC 时间字符串/对象 → 北京时间 ISO 字符串"""
+    if not utc_val:
+        return utc_val
+    try:
+        if isinstance(utc_val, datetime):
+            utc_dt = utc_val
+        else:
+            utc_dt = datetime.fromisoformat(str(utc_val).replace("Z", "+00:00"))
+        if utc_dt.tzinfo is None:
+            utc_dt = utc_dt.replace(tzinfo=timezone.utc)
+        return utc_dt.astimezone(BJ_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return utc_val
+
+
+def _convert_time_fields(rows: list, *time_keys):
+    """批量转换列表中的时间字段"""
+    for row in rows:
+        for key in time_keys:
+            if key in row:
+                row[key] = _utc_to_bj(row[key])
+    return rows
 
 
 # region ---- schema校验 ----
@@ -83,6 +112,7 @@ def get_monitor_trend(req: TrendReq):
         ORDER BY _time ASC
     """
     result = influx.query_sql(sql)
+    result = _convert_time_fields(result, "_time")
     return BaseResponse(data=result, msg="获取成功")
 
 
@@ -108,6 +138,7 @@ def get_monitor_logs(req: LogsReq):
             LIMIT {req.limit}
         """
     result = influx.query_sql(sql)
+    result = _convert_time_fields(result, "time")
     return BaseResponse(data=result, msg="获取成功")
 
 
@@ -147,6 +178,7 @@ def query_monitor_series(req: SeriesQueryReq):
 
     influx = get_influx_client()
     series_data = influx.query_sql(sql)
+    series_data = _convert_time_fields(series_data, "time_bucket")
 
     response_payload = {
         "series": series_data,

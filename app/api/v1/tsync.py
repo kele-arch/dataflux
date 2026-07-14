@@ -417,9 +417,19 @@ def get_task_monitor_trend(req: MonitorTrendReq, db: Session = Depends(get_db)):
         consumed_list = []
         elapsed_list = []
 
+        from datetime import timezone, timedelta
+        BJ_TZ = timezone(timedelta(hours=8))
+
         for row in raw_data:
             raw_time = str(row.get("time", ""))
-            time_str = raw_time.split("T")[1][:8] if "T" in raw_time else raw_time
+            # InfluxDB 返回 UTC，转为北京时间后提取 HH:MM:SS
+            try:
+                from datetime import datetime as dt
+                utc_dt = dt.fromisoformat(raw_time.replace("Z", "+00:00"))
+                bj_dt = utc_dt.astimezone(BJ_TZ)
+                time_str = bj_dt.strftime("%H:%M:%S")
+            except Exception:
+                time_str = raw_time.split("T")[1][:8] if "T" in raw_time else raw_time
 
             times.append(time_str)
             consumed_list.append(row.get("consumed", 0))
