@@ -19,7 +19,7 @@ def get_dialect_handler(db_type: str):
     db_type = db_type.lower()
     if db_type == "mysql":
         return MySQLHandler()
-    elif db_type == "postgresql":
+    elif db_type == "postgresql" or db_type == "vastbase":
         return PostgreSQLHandler()
     elif db_type == "dm":
         return DMHandler()

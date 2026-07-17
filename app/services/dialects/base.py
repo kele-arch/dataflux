@@ -2,13 +2,19 @@
 # @Author: 胡H
 # @File: base.py
 # @Created: 2026/6/5 10:31
-# @LastModified: 
+# @LastModified:
 # Copyright (c) 2026 by 胡H, All Rights Reserved.
 # @desc:
 
+from sqlalchemy import Text
+from sqlalchemy.types import NullType
+
+
 class BaseDialectHandler:
     def normalize_type(self, col_type):
-        """ 默认不转换类型 """
+        """ 默认不转换类型，NullType 兜底为 Text """
+        if isinstance(col_type, NullType):
+            return Text()
         return col_type
 
     def clean_column(self, col):

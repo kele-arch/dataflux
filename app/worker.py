@@ -63,7 +63,7 @@ async def run_sync_job(ctx, task_id: str):
 
         # db_name 仅对关系型数据库 / MongoDB 必需；API/Kafka/MQTT 等不使用此字段
         db_name = getattr(source, "db_name", None) or (source.config_json or {}).get("db_name")
-        _db_dependent_types = ("mysql", "postgresql", "dm", "oracle", "sqlserver", "sqlite", "mongodb")
+        _db_dependent_types = ("mysql", "postgresql", "dm", "oracle", "sqlserver", "sqlite", "mongodb", "vastbase")
         if source.type.lower() in _db_dependent_types and not db_name:
             logger.error(f"数据源缺少 db_name")
             return

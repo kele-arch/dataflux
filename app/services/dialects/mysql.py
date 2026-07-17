@@ -31,4 +31,4 @@ class MySQLHandler(BaseDialectHandler):
             return Integer()
         if isinstance(col_type, (DOUBLE, MYSQL_FLOAT)):
             return Float()
-        return col_type
+        return super().normalize_type(col_type)

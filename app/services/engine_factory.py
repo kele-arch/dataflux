@@ -32,7 +32,7 @@ class EngineFactory:
             return SnmpSyncEngine(req)
         elif db_type == "socket":
             return SocketSyncEngine(req)
-        elif db_type in ("mysql", "postgresql", "dm", "oracle", "sqlserver", "sqlite"):
+        elif db_type in ("mysql", "postgresql", "dm", "oracle", "sqlserver", "sqlite", "vastbase"):
             return DatabaseSyncEngine(req)
         else:
             raise ValueError(f"不支持的数据库类型: {req.db_type}")

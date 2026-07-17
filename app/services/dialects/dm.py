@@ -33,4 +33,4 @@ class DMHandler(BaseDialectHandler):
         elif "DATE" in type_name or "TIMESTAMP" in type_name:
             return DateTime()
 
-        return col_type
+        return super().normalize_type(col_type)

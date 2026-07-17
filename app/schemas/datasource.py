@@ -14,7 +14,7 @@ class DataSourceBase(BaseDecryptReq):
     name: str = Field(..., description="数据源名称，如：产线A_MySQL")
     # type: str = Field(..., description="数据源类型：mysql, postgresql")
     type: Literal[
-        "mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket", "kafka", "sqlite", "mqtt", "rabbitmq", "oss"] = Field(
+        "mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket", "kafka", "sqlite", "mqtt", "rabbitmq", "oss", "vastbase"] = Field(
         ..., description="数据库类型")
     host: str = Field(default="", description="主机地址（API/Kafka 等可留空）")
     port: int = Field(default=0, description="端口（API/Kafka 等可填 0）")

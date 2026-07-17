@@ -63,7 +63,7 @@ class OracleDialectHandler(BaseDialectHandler):
             return Text()
 
         # 兜底
-        return col_type
+        return super().normalize_type(col_type)
 
     def clean_column(self, col):
         # 剥离 Oracle 特有的默认值函数, 避免 PG 不认识

@@ -53,7 +53,7 @@ class DatabaseSyncEngine:
 
         if db_type == "mysql":
             return f"mysql+pymysql://{self.req.username}:{safe_password}@{self.req.host}:{self.req.port}/{self.req.db_name}?charset={self.req.charset}"
-        elif db_type == "postgresql":
+        elif db_type == "postgresql" or db_type == "vastbase":
             return f"postgresql+psycopg2://{self.req.username}:{safe_password}@{self.req.host}:{self.req.port}/{self.req.db_name}"
         elif db_type == "dm":
             return f"dm+dmPython://{self.req.username}:{safe_password}@{self.req.host}:{self.req.port}"

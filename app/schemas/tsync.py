@@ -30,7 +30,7 @@ class DBSyncReq(BaseDecryptReq):
     task_id: Optional[str] = Field(default=None, description="任务唯一标识(内部流转专用)")
 
     db_type: Literal[
-        "mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket", "kafka", "sqlite", "mqtt", "rabbitmq", "oss"] = Field(
+        "mysql", "postgresql", "oracle", "mongodb", "dm", "ftp", "api", "snmp", "socket", "kafka", "sqlite", "mqtt", "rabbitmq", "oss", "vastbase"] = Field(
         ...,
         description="数据库类型")
     host: str = Field(default="", description="主机地址 IP（API/Kafka 等可留空）")

@@ -80,7 +80,7 @@ class SqlServerDialectHandler(BaseDialectHandler):
             return Text()
 
         # 兜底
-        return col_type
+        return super().normalize_type(col_type)
 
     def clean_column(self, col):
         # 剥离 SQL Server 特有的默认值函数

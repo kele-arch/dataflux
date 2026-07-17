@@ -27,6 +27,7 @@ def build_db_url(source_data) -> str:
         "dm": "dm+dmPython",
         "sqlserver":  "mssql+pymssql",
         "sqlite": "sqlite",
+        "vastbase": "postgresql+psycopg2",
 
     }
 

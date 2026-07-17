@@ -18,4 +18,4 @@ class PostgreSQLHandler(BaseDialectHandler):
             # PG 的 ENUM 是独立创建的 Type为. 了 ODS 层的极简和通用
             # 将源库的 ENUM 统一下降级为 VARCHAR
             return String(255)
-        return col_type
+        return super().normalize_type(col_type)
