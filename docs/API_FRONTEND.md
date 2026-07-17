@@ -26,7 +26,7 @@
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | name | string | ✅ | 数据源名称 |
-| type | string | ✅ | 类型：`mysql` / `postgresql` / `oracle` / `sqlserver` / `dm` / `sqlite` / `mongodb` / `ftp` / `api` / `snmp` / `socket` / `kafka` / `mqtt` / `rabbitmq` / `oss` |
+| type | string | ✅ | 类型：`mysql` / `postgresql` / `oracle` / `sqlserver` / `dm` / `sqlite` / `mongodb` / `ftp` / `api` / `snmp` / `socket` / `kafka` / `mqtt` / `rabbitmq` / `oss` / `vastbase` |
 | host | string | ✅ | 主机地址 |
 | port | int | ✅ | 端口 |
 | db_name | string | ✅ | 数据库名 |
@@ -186,6 +186,23 @@
 
 ---
 
+### 8. Vastbase（海量数据库）兼容说明
+
+`vastbase` 类型完全复用 PostgreSQL 管线：
+
+| 维度 | 说明 |
+|------|------|
+| 驱动 | `psycopg2`（与 PostgreSQL 相同） |
+| 端口 | `5432` |
+| 连接串 | `postgresql+psycopg2://user:pass@host:5432/database` |
+| 方言处理器 | `PostgreSQLHandler` |
+| 建表 / 类型映射 | 与 PostgreSQL 一致 |
+| 增量采集 | 支持 `full` / `inc_id` / `inc_time` / `custom_sql` |
+
+使用方式：创建数据源时 `type` 选择 `vastbase`，其余操作（连接测试、建任务、同步）与 PostgreSQL 完全一致。
+
+---
+
 ## 二、同步任务管理 `/tsync`
 
 > ### ⚠️ 核心字段语义说明（必读）
@@ -223,7 +240,7 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| db_type | string | ✅ | `mysql` / `postgresql` / `oracle` / `sqlserver` / `dm` / `sqlite` / `mongodb` / `mqtt` / `rabbitmq` / `oss` |
+| db_type | string | ✅ | `mysql` / `postgresql` / `oracle` / `sqlserver` / `dm` / `sqlite` / `mongodb` / `mqtt` / `rabbitmq` / `oss` / `vastbase` |
 | host | string | ✅ | 主机地址 |
 | port | int | ✅ | 端口 |
 | username | string | ✅ | 用户名 |
