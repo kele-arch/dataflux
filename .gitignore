@@ -31,7 +31,7 @@ tests/*
 Test/*
 
 # Alembic
-alembic/versions/*
+
 
 # Data
 data/
