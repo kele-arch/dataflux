@@ -32,7 +32,9 @@ WORKDIR /app
 # 设置时区并安装运行时必需的动态库
 ENV TZ=Asia/Shanghai
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq-dev \
+    libpq5 \
+    libgomp1 \
+    ffmpeg \
     tzdata \
     && rm -rf /var/lib/apt/lists/*
 

@@ -44,5 +44,3 @@ Test/
 # License (部署时通过 volume/secrets 注入)
 license.key
 
-# Alembic migrations (各环境独立)
-alembic/versions/*.py

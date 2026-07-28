@@ -1,8 +1,9 @@
 services:
-
   dataflux:
     image: dataflux:0.9.1
     container_name: dataflux
+
+    pull_policy: never
 
     ports:
       - "8028:8028"
@@ -19,7 +20,28 @@ services:
       - ./large-v3:/app/large-v3
       - ./license.key:/app/license.key
 
+    init: true
     restart: unless-stopped
+    stop_grace_period: 30s
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import socket; s=socket.create_connection(('127.0.0.1',8028),5); s.close()"
+        ]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 90s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
     deploy:
       resources:
@@ -27,7 +49,7 @@ services:
           devices:
             - driver: nvidia
               count: 1
-              capabilities: [ gpu ]
+              capabilities: [gpu]
 
 volumes:
   ftp_data:
