@@ -36,6 +36,7 @@ async def run_sync_job(ctx, task_id: str):
         logger.warning(f"防抖拦截: 任务 [{task_id}] 正在执行中, 已静默丢弃本次重复下发指令！")
         return
 
+    await redis.delete(f"sync_enqueue_lock:{task_id}")
     logger.info(f"任务 [{task_id}] 成功获取分布式锁, 准备启动同步流程...")
 
     # 提前声明变量, 防止在 try 块抛异常后 finally 找不到报错
@@ -193,6 +194,7 @@ async def run_sync_job(ctx, task_id: str):
             task.last_watermark = str(new_watermark)
 
         # 组装执行详情快照
+        operation_context = task_log.detail_json or {}
         detail_json = {
             "sync_mode": sync_req.sync_mode,
             "collect_mode": sync_req.collect_mode,
@@ -203,6 +205,8 @@ async def run_sync_job(ctx, task_id: str):
             "watermark_after": str(new_watermark) if new_watermark else None,
             "tables": result.get("table_details", [])
         }
+        if operation_context:
+            detail_json["operation_context"] = operation_context
 
         # 构建表级执行日志（映射流水）
         table_details = result.get("table_details", [])

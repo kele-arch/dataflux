@@ -13,6 +13,9 @@ from .exec_log import router as exec_log_router
 from .monitor import router as monitor_router
 from .explorer import router as explorer_router
 from .media import router as media_router
+from .health import router as health_router
+from .task_operations import router as task_operations_router
+from .log_maintenance import router as log_maintenance_router
 
 api_router = APIRouter()
 api_router.include_router(tsync_router)
@@ -22,3 +25,6 @@ api_router.include_router(exec_log_router)
 api_router.include_router(monitor_router)
 api_router.include_router(explorer_router)
 api_router.include_router(media_router)
+api_router.include_router(health_router)
+api_router.include_router(task_operations_router)
+api_router.include_router(log_maintenance_router)

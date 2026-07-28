@@ -76,7 +76,7 @@ class InfluxDBV3Client:
         """ 连通性检测 """
         try:
             result = self.query_sql("SELECT 1")
-            return True
+            return bool(result)
         except Exception:
             return False
 

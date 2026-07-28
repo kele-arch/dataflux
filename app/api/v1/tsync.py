@@ -199,8 +199,12 @@ async def run_sync_task(req: TaskIdReq, db: Session = Depends(get_db)):
 
     # 前置防抖拦截：检查分布式锁，防止产生僵尸 pending 记录
     lock_key = f"sync_task_lock:{req.task_id}"
-    if await arq_module.arq_pool.exists(lock_key):
+    enqueue_key = f"sync_enqueue_lock:{req.task_id}"
+    if await arq_module.arq_pool.exists(lock_key) or await arq_module.arq_pool.exists(enqueue_key):
         return BaseResponse(code=0, msg="任务正在排队或执行中, 请勿重复触发")
+    reserved = await arq_module.arq_pool.set(enqueue_key, "1", nx=True, ex=600)
+    if not reserved:
+        return BaseResponse(code=0, msg="任务正在入队中, 请勿重复触发")
 
     # 清理 Redis 控制信号
     set_task_status(req.task_id, TASK_RUNNING)
@@ -223,7 +227,18 @@ async def run_sync_task(req: TaskIdReq, db: Session = Depends(get_db)):
     db.refresh(pending_log)
 
     # 推入 ARQ 队列
-    await arq_module.arq_pool.enqueue_job('run_sync_job', task.id)
+    try:
+        job = await arq_module.arq_pool.enqueue_job('run_sync_job', task.id)
+        if job is None:
+            raise RuntimeError("ARQ 拒绝了入队请求")
+    except Exception as e:
+        pending_log.status = "failed"
+        pending_log.end_time = datetime.now()
+        pending_log.error_msg = f"入队失败: {e}"
+        db.commit()
+        await arq_module.arq_pool.delete(enqueue_key)
+        await arq_module.arq_pool.delete(f"task_control:{task.id}")
+        return BaseResponse(code=0, msg=f"任务入队失败: {e}")
     logger.info(f"手动触发同步任务 -> [ID:{task.id} 名称:{task.task_name}], 已推入后台队列")
 
     return BaseResponse(data={"log_id": pending_log.id, "status": "pending"}, msg="任务已进入执行队列")
@@ -253,8 +268,12 @@ async def resume_task(req: TaskIdReq, db: Session = Depends(get_db)):
 
     # 前置防抖：与 /run 一致，防止重复入队产生僵尸日志
     lock_key = f"sync_task_lock:{req.task_id}"
-    if await arq_module.arq_pool.exists(lock_key):
+    enqueue_key = f"sync_enqueue_lock:{req.task_id}"
+    if await arq_module.arq_pool.exists(lock_key) or await arq_module.arq_pool.exists(enqueue_key):
         return BaseResponse(code=0, msg="任务正在排队或执行中, 请勿重复触发")
+    reserved = await arq_module.arq_pool.set(enqueue_key, "1", nx=True, ex=600)
+    if not reserved:
+        return BaseResponse(code=0, msg="任务正在入队中, 请勿重复触发")
 
     # ORM 清理旧的 pending 僵尸日志
     db.execute(
@@ -284,7 +303,18 @@ async def resume_task(req: TaskIdReq, db: Session = Depends(get_db)):
     db.refresh(pending_log)
 
     # 自动入队启动
-    await arq_module.arq_pool.enqueue_job('run_sync_job', task.id)
+    try:
+        job = await arq_module.arq_pool.enqueue_job('run_sync_job', task.id)
+        if job is None:
+            raise RuntimeError("ARQ 拒绝了入队请求")
+    except Exception as e:
+        pending_log.status = "failed"
+        pending_log.end_time = datetime.now()
+        pending_log.error_msg = f"续传入队失败: {e}"
+        db.commit()
+        await arq_module.arq_pool.delete(enqueue_key)
+        await arq_module.arq_pool.delete(f"task_control:{task.id}")
+        return BaseResponse(code=0, msg=f"任务续传入队失败: {e}")
 
     return BaseResponse(data={"log_id": pending_log.id, "status": "pending"}, msg="任务断点已恢复,成功重新入队运行")
 
