@@ -1240,6 +1240,191 @@ WHERE id IN (
 
 `by_days` 和 `by_count` 依赖采集表中有 `collected_at` 列（ISO 格式字符串，引擎写入时自动添加）。FTP/OSS/Kafka/MQTT/RabbitMQ/API/Socket/SNMP 引擎均已内置此列。
 
+### 16. 服务健康与依赖状态 `/health`
+
+健康接口统一使用 POST，并使用 Pydantic 请求体和 `BaseResponse` 响应结构。
+
+| 接口 | 请求模型 | 说明 |
+|------|---------|------|
+| `POST /health/live` | `HealthCheckReq` | 只检查 API 进程是否存活 |
+| `POST /health/ready` | `HealthCheckReq` | 检查必要依赖和调度器，未就绪时返回 `code=0` |
+| `POST /health/dependencies` | `HealthCheckReq` | 返回主库、采集库、Redis、ARQ、MongoDB、InfluxDB及调度器明细 |
+| `POST /health/workers` | `WorkerHealthReq` | 根据 ARQ Worker 心跳键返回 Worker 和队列状态 |
+
+`ready` 的必要依赖包括主数据库、采集数据库、Redis、ARQ和 APScheduler；MongoDB、InfluxDB作为可选依赖展示状态，但不会单独阻断服务就绪。
+
+普通健康检查请求：
+
+```json
+{"timeout_seconds": 5}
+```
+
+Worker检查请求：
+
+```json
+{"timeout_seconds": 5, "queue_name": "arq:queue"}
+```
+
+```json
+{
+  "code": 1,
+  "msg": "服务已就绪",
+  "data": {
+    "status": "ready",
+    "scheduler": {"status": "up", "jobs": 6},
+    "dependencies": [
+      {"name": "main_database", "status": "up", "required": true, "latency_ms": 2.31},
+      {"name": "redis", "status": "up", "required": true, "latency_ms": 1.12}
+    ],
+    "time": "2026-07-28T12:00:00"
+  }
+}
+```
+
+---
+
+### 17. 任务配置预检与数据预览
+
+#### 17.1 配置预检 — `POST /tsync/validate`
+
+```json
+{"task_id": "550e8400e29b41d4a716446655440000"}
+```
+
+预检不会写入目标库。关系数据库会检查连通性、源表、增量字段和只读 SQL；MongoDB会检查集合与增量配置；API、FTP、OSS、SNMP、Socket和消息队列会检查必要参数。启用清理策略时还会检查 `topic_or_table`。
+
+响应中的 `valid=false` 或 `code=0` 表示至少一项未通过：
+
+```json
+{
+  "code": 0,
+  "msg": "预检未通过",
+  "data": {
+    "valid": false,
+    "source_type": "postgresql",
+    "checks": [
+      {"name": "connection", "status": "passed", "message": "数据库连接成功"},
+      {"name": "incremental_column", "status": "failed", "message": "以下表缺少增量字段 [id]: ['orders']"}
+    ]
+  }
+}
+```
+
+#### 17.2 源数据预览 — `POST /tsync/preview`
+
+```json
+{
+  "task_id": "550e8400e29b41d4a716446655440000",
+  "table_name": "orders",
+  "limit": 20
+}
+```
+
+`table_name` 不传时使用任务配置的第一张源表/集合，`limit` 范围为 1～100。当前支持关系数据库、MongoDB和 GET API。为避免副作用，POST/PUT API、消息消费、FTP/OSS下载、SNMP和Socket不执行预览，只返回“不支持预览”，可继续使用配置预检。
+
+---
+
+### 18. 水位线、补数与失败重试
+
+#### 18.1 查询水位线 — `POST /tsync/watermark/get`
+
+```json
+{"task_id": "550e8400e29b41d4a716446655440000"}
+```
+
+#### 18.2 重置水位线 — `POST /tsync/watermark/reset`
+
+```json
+{
+  "task_id": "550e8400e29b41d4a716446655440000",
+  "watermark": "1000"
+}
+```
+
+`watermark` 传 `null` 或空字符串表示清空，下次增量任务从头抽取。任务正在执行或入队时禁止重置，同时会清除 Redis 中的暂停断点。
+
+#### 18.3 补数 — `POST /tsync/backfill`
+
+```json
+{
+  "task_id": "550e8400e29b41d4a716446655440000",
+  "start_watermark": "1000",
+  "reason": "补采历史漏数"
+}
+```
+
+仅支持 `inc_id`、`inc_time` 任务。接口先把正式水位线设置为 `start_watermark`，再生成 pending 日志并入队；增量查询使用 `> start_watermark`。传 `null` 表示从头补数。入队失败时会恢复原水位线。
+
+> 补数会推进任务的正式水位线，并按照任务当前 `sync_mode` 写入目标表。执行前应确认目标表的幂等/冲突策略。
+
+#### 18.4 重试失败执行 — `POST /tsync/retry`
+
+```json
+{
+  "log_id": "a41d8e0a7fb74af894cb2d5dfcb01234",
+  "reason": "源数据库网络恢复"
+}
+```
+
+只有状态为 `failed` 的执行日志可以重试。重试不会回退水位线，会生成新的 pending 日志，并在执行详情的 `operation_context.retry_of_log_id` 中保留原日志关联。
+
+### 19. 日志维护 `/log`
+
+所有日志维护接口均使用 POST、Pydantic 请求体和 `BaseResponse` 响应。
+
+#### 19.1 日志容量统计 — `POST /log/stats`
+
+```json
+{"task_id": null}
+```
+
+`task_id` 不传表示统计全部任务。返回任务级日志、表级日志、状态分布、孤儿表级日志、最早/最新日志时间、两张日志表的占用空间和当前数据库总大小。非 PostgreSQL 环境下空间字段返回 `null`。
+
+#### 19.2 日志清理预览 — `POST /log/clean/preview`
+
+```json
+{
+  "task_id": null,
+  "statuses": ["success"],
+  "keep_days": 90,
+  "before_time": null,
+  "max_delete": 100000
+}
+```
+
+预览只统计，不删除。`before_time` 的优先级高于 `keep_days`，返回匹配数量、本次预计删除数量以及是否因为 `max_delete` 被截断。
+
+#### 19.3 执行日志清理 — `POST /log/clean`
+
+```json
+{
+  "task_id": null,
+  "statuses": ["success"],
+  "keep_days": 90,
+  "before_time": null,
+  "max_delete": 100000,
+  "confirm": true
+}
+```
+
+必须传 `confirm=true`。后台先删除关联的 `SyncExecutionLog`，再删除 `TaskLog`，默认不会处理 `pending/running`。单次达到上限时响应 `truncated=true`，可继续调用下一批。
+
+#### 19.4 日志导出 — `POST /log/export`
+
+```json
+{
+  "task_id": null,
+  "statuses": ["success", "failed"],
+  "start_time": "2026-07-01T00:00:00",
+  "end_time": "2026-07-28T23:59:59",
+  "include_task_logs": true,
+  "include_execution_logs": true,
+  "max_rows": 50000
+}
+```
+
+返回 ZIP 文件的 Base64 内容，压缩包中包含 `task_logs.csv` 和/或 `execution_logs.csv`。前端读取 `data.content_base64`，Base64解码后按 `data.file_name` 下载。每类日志最多导出 `max_rows` 条，`data.truncated` 表示是否还有未导出的记录。
+
 
 
 ## 三、任务执行日志 `/tasklog`
