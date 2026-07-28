@@ -44,28 +44,19 @@ class CleanService:
         inspector = inspect(collected_engine)
         return table_name in inspector.get_table_names()
 
-    def _resolve_tables_to_clean(self, task_id: str, table_name: str) -> list:
+    def _resolve_tables_to_clean(self, task_id: str, table_name: str) -> list[str]:
         """
-        解析实际需要清理的表名列表
-        如果 table_name 是默认的动态表名模式(ftp_*/oss_*/mq_*/kafka_*/api_*), 
-        则扫描采集库中所有匹配该前缀的表, 防止 DROP 遗漏动态生成的小表 
+        返回任务明确配置的目标表。
+
+        清理范围以任务的目标表为边界，禁止通过 ftp_、api_ 等公共前缀
+        扫描采集库，避免一个任务误清理其他任务的数据表。
         """
-        # 默认表名模式: 未指定 target_table 时自动生成
-        auto_patterns = ("ftp_", "oss_", "mq_", "kafka_", "api_", "task_", "snmp_", "socket_", "mqtt_")
-        is_auto = table_name.startswith(auto_patterns)
+        exact_table_name = (table_name or "").strip()
+        if not exact_table_name:
+            raise ValueError(f"任务 [{task_id}] 未配置目标表，拒绝执行清理")
 
-        if not is_auto:
-            return [table_name]
-
-        # 扫描采集库中所有匹配前缀的表
-        inspector = inspect(collected_engine)
-        all_tables = inspector.get_table_names()
-        matched = [t for t in all_tables if t.startswith(table_name)]
-
-        if matched:
-            logger.info(f"动态表名解析: 默认 [{table_name}] ->  实际 {len(matched)} 张: {matched}")
-            return matched
-        return [table_name]
+        self._validate_table_name(exact_table_name)
+        return [exact_table_name]
 
     def _get_local_task_dirs(self, task_id: str) -> list:
         ftp_base = Path(project_rootpath, getattr(settings, "FTP_LOCAL_SAVE_DIR", "ftp_files"))
@@ -230,7 +221,7 @@ class CleanService:
           by_days   ->  按时间保留
           by_count  ->  按条数保留
         """
-        # 解析目标表(动态表名场景下可能有多张)
+        # 只解析任务明确配置的目标表，不允许按公共前缀扩大清理范围
         tables_to_clean = self._resolve_tables_to_clean(task_id, table_name)
 
         result = {"tables_cleaned": []}

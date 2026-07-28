@@ -597,26 +597,12 @@ def clean_task(req: TaskCleanReq, db: Session = Depends(get_db)):
     if not task:
         return BaseResponse(code=0, msg="任务不存在")
 
-    # 根据数据源类型推导正确的表名前缀, 对齐各引擎实际建表命名
-    if task.topic_or_table:
-        table_name = task.topic_or_table
-    else:
-        source = db.execute(
-            select(DataSource).where(DataSource.id == task.source_id)
-        ).scalar_one_or_none()
-        source_type = source.type.lower() if source else ""
-
-        prefix_map = {
-            "ftp": "ftp_", "ftps": "ftp_", "sftp": "ftp_",
-            "kafka": "kafka_",
-            "mqtt": "mqtt_",
-            "rabbitmq": "mq_",
-            "api": "api_",
-            "oss": "oss_",
-            "snmp": "snmp_",
-            "socket": "socket_",
-        }
-        table_name = prefix_map.get(source_type, f"task_{req.task_id}")
+    table_name = (task.topic_or_table or "").strip()
+    if not table_name:
+        return BaseResponse(
+            code=0,
+            msg="任务未配置目标表，为防止跨任务误删，拒绝执行清理"
+        )
 
     try:
         result = clean_service.clean_task_data(
