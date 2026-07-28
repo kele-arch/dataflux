@@ -210,9 +210,9 @@
 > | 字段 | 必填 | 含义 | 说明 |
 > |------|------|------|------|
 > | `sync_tables` | ❌ | **源库**要同步的表名列表 | 从源数据库中反射哪些表。不传 = 整库同步 |
-> | `topic_or_table` | ❌ | `custom_sql` 模式下目标库写入表名 | **普通模式不需要传**，只在 `custom_sql` 模式下必填 |
+> | `topic_or_table` | 条件必填 | 目标库写入表名，也是任务清理的唯一目标表 | `custom_sql` 模式必填；普通模式执行手动/自动清理时必须配置 |
 >
-> **普通模式（full/inc_id/inc_time）：** 只需传 `sync_tables` 指定源表，`topic_or_table` 不用传。
+> **普通模式（full/inc_id/inc_time）：** 同步本身只需传 `sync_tables` 指定源表；如果需要使用手动或自动清理，必须同时配置 `topic_or_table`，清理只操作该精确表名。
 >
 > **custom_sql 模式：** `topic_or_table` 必填，指定目标库中**已存在**的写入表名。
 
@@ -301,7 +301,7 @@
 |------|------|------|------|
 | task_name | string | ✅ | 任务名称 |
 | source_id | string | ❌ | 关联的数据源 UUID |
-| topic_or_table | string | ❌ | `custom_sql` 模式下必填，指定目标库写入表名。普通模式不用传 |
+| topic_or_table | string | 条件必填 | 目标库写入表名，也是清理操作的唯一目标表。`custom_sql` 或启用手动/自动清理时必填 |
 | sync_tables | string[] | ❌ | **源库**要同步的表名列表（必须是源库中真实存在的表）。不传 = 整库同步 |
 | table_mapping | object | ❌ | 表名映射：`{"源表名":"目标表名"}`，不传则同名写入。见下方详解 |
 | sync_mode | string | ❌ | 冲突策略，默认 `overwrite` |
@@ -319,7 +319,7 @@
 | target_username | string | ❌ | 目标库账号（仅 `target_type=mongodb` 时生效） |
 | target_password | string | ❌ | 目标库密码（仅 `target_type=mongodb` 时生效） |
 | target_db_name | string | ❌ | 目标库名（仅 `target_type=mongodb` 时生效） |
-| clean_policy | string | ❌ | 清理策略：`none`（默认）/ `by_days` / `by_count`。详见[第 15 节 DLM](#15-数据生命周期管理dlm) |
+| clean_policy | string | ❌ | 清理策略：`none`（默认）/ `by_days` / `by_count`。非 `none` 时必须配置 `topic_or_table`，详见[第 15 节 DLM](#15-数据生命周期管理dlm) |
 | clean_keep_days | int | ❌ | `by_days` 模式：保留最近 N 天数据 |
 | clean_keep_count | int | ❌ | `by_count` 模式：保留最新 N 条数据 |
 | clean_cron | string | ❌ | 自动清理 Cron 表达式（标准 5 字段），如 `"0 3 * * *"`。格式非法会直接拦截 |
@@ -501,7 +501,7 @@
 }
 ```
 
-> 只传 `sync_tables`，不用传 `topic_or_table`。
+> 仅执行同步时只传 `sync_tables` 即可；如果该任务还需要清理数据，必须配置 `topic_or_table`，并且一次清理只操作这一张目标表。
 
 **场景 2：整库同步**
 
@@ -979,27 +979,21 @@ const timer = setInterval(async () => {
 | keep_count | int | by_count 必填 | — | 保留最新 N 条数据 |
 | clean_files | bool | ❌ | `true` | 是否**同时**清理文件记录（`ftp_file_record`/`oss_file_record`）和本地缓存文件 |
 
-**`table_name` 自动推导：**
+**目标表解析规则：**
 
-请求体不需要传 `table_name`，后端自动根据任务配置推导：
+请求体不需要传 `table_name`。后端根据 `task_id` 查询任务，并且只使用任务配置中的 `topic_or_table` 作为清理目标：
 
 ```
-if task.topic_or_table 有值:
-    → 精确表名（如 "my_collected_data"）
+task = get_task(task_id)
+table_name = task.topic_or_table
+
+if table_name 为空:
+    → 拒绝清理
 else:
-    根据数据源类型查映射表：
-    ftp/ftps/sftp → "ftp_"
-    kafka         → "kafka_"
-    mqtt          → "mqtt_"
-    rabbitmq      → "mq_"
-    api           → "api_"
-    oss           → "oss_"
-    snmp          → "snmp_"
-    socket        → "socket_"
-    其他          → "task_{task_id}"
+    → 只清理该精确表名
 ```
 
-若推导结果是前缀（如 `"ftp_"`），会自动扫描采集库中所有以该前缀开头的表，逐一清理，防止遗漏动态生成的采集表。
+> **安全边界：** 后端不再根据 `ftp_`、`api_`、`oss_` 等公共前缀扫描采集库，避免一个任务误删其他任务的数据。若多个任务明确配置了同一个 `topic_or_table`，清理其中任一任务都会影响该共享表，由任务配置者负责。
 
 ---
 
@@ -1119,6 +1113,9 @@ curl -X POST http://127.0.0.1:8028/api/v1/tsync/clean \
 // 缺少 keep_days
 {"code": 0, "msg": "by_days 模式必须指定 keep_days"}
 
+// 任务未配置明确的目标表
+{"code": 0, "msg": "任务未配置目标表，为防止跨任务误删，拒绝执行清理"}
+
 // 非法表名（SQL 注入防护）
 {"code": 0, "msg": "表名包含非法字符: bad; DROP TABLE users--"}
 
@@ -1135,9 +1132,9 @@ curl -X POST http://127.0.0.1:8028/api/v1/tsync/clean \
 
 ```
 POST /tsync/clean
-  ├─ 1. 根据 task_id 查 DataSource 推导 table_name 前缀
-  ├─ 2. _resolve_tables_to_clean(): 前缀匹配 → 扫描采集库所有匹配表
-  ├─ 3. 逐表执行:
+  ├─ 1. 根据 task_id 查询 CollectTask
+  ├─ 2. 读取 task.topic_or_table；为空则拒绝清理
+  ├─ 3. 只对该精确目标表执行:
   │     ├─ truncate → TRUNCATE TABLE "xxx" RESTART IDENTITY
   │     ├─ drop     → DROP TABLE IF EXISTS "xxx"
   │     ├─ by_days  → DELETE FROM "xxx" WHERE collected_at < :cutoff
@@ -1167,6 +1164,8 @@ POST /tsync/clean
 | clean_cron | string | — | 标准 5 字段 Cron 表达式（如 `"0 3 * * *"`） |
 
 > `clean_cron` 在 `POST /tsync/add` 和 `POST /tsync/update` 中都会校验格式合法性，非法表达式直接拦截并返回错误提示。
+>
+> 启用自动清理时必须配置 `topic_or_table`。Worker 只清理这张精确目标表；未配置时会记录错误并跳过，不会按数据源类型前缀扩大清理范围。
 
 **完整示例 — 创建带自动清理的任务：**
 
@@ -1176,6 +1175,7 @@ curl -X POST http://127.0.0.1:8028/api/v1/tsync/add \
   -d '{
     "task_name": "每日传感器日志",
     "source_id": "abc123...",
+    "topic_or_table": "sensor_logs",
     "schedule_type": "cron",
     "schedule_cron": "0 */2 * * *",
     "sync_mode": "overwrite",
@@ -1203,7 +1203,7 @@ APScheduler (clean_cron 到点)                          │
     → ARQ enqueue_job('run_clean_job', task_id) ──────┘
       → Worker.run_clean_job:
           1. 查 task.clean_policy / keep_days / keep_count
-          2. 推导表名前缀 (同手动清理)
+          2. 读取 task.topic_or_table；为空则拒绝执行
           3. clean_service.clean_task_data(clean_files=True)
              ├─ by_days:  DELETE WHERE collected_at < now - N天
              ├─ by_count: DELETE WHERE id NOT IN (ROW_NUMBER TOP N)
@@ -5646,4 +5646,3 @@ FTP 采集任务配置了 `file_parse=1` 且采集到视频/音频文件时，�
 ```
 
 > API 接口用于**即时预览测试**，FTP 引擎用于**批量自动采集**——两套触发方式，共享同一底层。
-
