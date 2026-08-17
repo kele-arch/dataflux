@@ -38,11 +38,15 @@ def get_log_stats(req: LogStatsReq, db: Session = Depends(get_db)):
 def preview_log_clean(req: LogCleanPreviewReq, db: Session = Depends(get_db)):
     try:
         result = log_maintenance_service.clean_preview(db, req)
+        if result and result.get('matched_task_logs', 0) == 0 and result.get('matched_execution_logs', 0) == 0:
+            return BaseResponse(
+                data=result,
+                msg=f"没有超过 {req.keep_days} 天的日志需要清理"
+            )
         return BaseResponse(data=result, msg="日志清理预览成功")
     except Exception as exc:
         logger.error(f"日志清理预览失败: {exc}")
         return BaseResponse(code=0, msg=f"日志清理预览失败: {exc}")
-
 
 @router.post("/clean", summary="执行日志清理", response_model=BaseResponse)
 def clean_logs(req: LogCleanReq, db: Session = Depends(get_db)):
